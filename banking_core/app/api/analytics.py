@@ -1,0 +1,108 @@
+from typing import Annotated
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy.orm import Session
+
+from banking_core.app.api.dependencies import get_current_user_id, get_db_session
+from banking_core.app.schemas.analytics import (
+    BudgetRequest,
+    BudgetResponse,
+    BudgetStatusResponse,
+    BudgetUpdateRequest,
+    CancelSubscriptionRequest,
+    CategoryCorrectionRequest,
+    ReminderRequest,
+    ReminderResponse,
+    SpendingSummaryResponse,
+    SubscriptionResponse,
+)
+from banking_core.app.schemas.banking import TransactionResponse
+from banking_core.app.services.analytics import (
+    BillAnalysisService,
+    BudgetService,
+    SubscriptionService,
+)
+
+router = APIRouter(tags=["analytics"])
+Db = Annotated[Session, Depends(get_db_session)]
+Actor = Annotated[UUID, Depends(get_current_user_id)]
+
+
+@router.get("/analytics/monthly-summary", response_model=SpendingSummaryResponse)
+def monthly_summary(
+    year: int, month: Annotated[int, Query(ge=1, le=12)], session: Db, actor: Actor
+) -> SpendingSummaryResponse:
+    summary = BillAnalysisService(session).monthly_summary(actor, year, month)
+    return SpendingSummaryResponse.model_validate(summary, from_attributes=True)
+
+
+@router.get("/analytics/spending", response_model=SpendingSummaryResponse)
+def analyze_spending(
+    year: int, month: Annotated[int, Query(ge=1, le=12)], session: Db, actor: Actor
+) -> SpendingSummaryResponse:
+    return monthly_summary(year, month, session, actor)
+
+
+@router.patch("/transactions/{transaction_id}/category", response_model=TransactionResponse)
+def categorize_transaction(
+    transaction_id: UUID, request: CategoryCorrectionRequest, session: Db, actor: Actor
+) -> TransactionResponse:
+    item = BillAnalysisService(session).correct_category(transaction_id, actor, request.category)
+    return TransactionResponse.model_validate(item)
+
+
+@router.post("/budgets", response_model=BudgetResponse)
+def create_budget(request: BudgetRequest, session: Db, actor: Actor) -> BudgetResponse:
+    item = BudgetService(session).create(
+        actor, request.category, request.month, request.limit_amount, request.currency
+    )
+    return BudgetResponse.model_validate(item)
+
+
+@router.patch("/budgets/{budget_id}", response_model=BudgetResponse)
+def update_budget(
+    budget_id: UUID, request: BudgetUpdateRequest, session: Db, actor: Actor
+) -> BudgetResponse:
+    return BudgetResponse.model_validate(
+        BudgetService(session).update(budget_id, actor, request.limit_amount)
+    )
+
+
+@router.get("/budgets", response_model=list[BudgetResponse])
+def list_budgets(session: Db, actor: Actor) -> list[BudgetResponse]:
+    return [BudgetResponse.model_validate(item) for item in BudgetService(session).list(actor)]
+
+
+@router.get("/budgets/{budget_id}/status", response_model=BudgetStatusResponse)
+def budget_status(budget_id: UUID, session: Db, actor: Actor) -> BudgetStatusResponse:
+    return BudgetStatusResponse.model_validate(BudgetService(session).status(budget_id, actor))
+
+
+@router.post("/subscriptions/{subscription_id}/reminders", response_model=ReminderResponse)
+def create_subscription_reminder(
+    subscription_id: UUID, request: ReminderRequest, session: Db, actor: Actor
+) -> ReminderResponse:
+    item = SubscriptionService(session).create_reminder(subscription_id, actor, request.remind_on)
+    return ReminderResponse.model_validate(item)
+
+
+@router.get("/subscriptions", response_model=list[SubscriptionResponse])
+def list_subscriptions(session: Db, actor: Actor) -> list[SubscriptionResponse]:
+    return [
+        SubscriptionResponse.model_validate(item)
+        for item in SubscriptionService(session).list(actor)
+    ]
+
+
+@router.get("/subscriptions/detect-recurring")
+def detect_recurring(session: Db, actor: Actor) -> list[dict[str, object]]:
+    return SubscriptionService(session).detect_recurring(actor)
+
+
+@router.post("/subscriptions/{subscription_id}/cancel", response_model=SubscriptionResponse)
+def cancel_subscription(
+    subscription_id: UUID, request: CancelSubscriptionRequest, session: Db, actor: Actor
+) -> SubscriptionResponse:
+    item = SubscriptionService(session).cancel(subscription_id, actor, request.authorization_ref)
+    return SubscriptionResponse.model_validate(item)

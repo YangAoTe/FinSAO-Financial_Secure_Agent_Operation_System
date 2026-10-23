@@ -1,0 +1,480 @@
+import os
+from collections.abc import Generator
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from uuid import UUID
+
+import pytest
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import create_engine, func, select
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.orm import Session
+
+from banking_core.app.domain.enums import Currency, TransferStatus
+from banking_core.app.persistence.models import (
+    AccountModel,
+    AuditEventModel,
+    LedgerEntryModel,
+    SafetyLockModel,
+    TransactionModel,
+    TransferDraftModel,
+    UserModel,
+    WealthHoldingModel,
+    WealthProductModel,
+)
+from banking_core.app.security.approvals import (
+    ApprovalService,
+    DatabaseTransferAuthorizationVerifier,
+    MockMfaProvider,
+)
+from banking_core.app.security.models import ApprovalStatus
+from banking_core.app.security.transfer_authorization import (
+    DenyAllTransferAuthorizationVerifier,
+    DevelopmentTransferAuthorizationVerifier,
+)
+from banking_core.app.services.accounts import AccountService
+from banking_core.app.services.analytics import BillAnalysisService, SubscriptionService
+from banking_core.app.services.cards_wealth import CardService, WealthService
+from banking_core.app.services.errors import (
+    AuthorizationError,
+    ConflictError,
+    ForbiddenError,
+    InsufficientFundsError,
+)
+from banking_core.app.services.ledger import LedgerService
+from banking_core.app.services.transfers import TransferService
+from scripts.seed_demo_data import seed
+
+DATABASE_TEST_URL = os.getenv("DATABASE_TEST_URL")
+pytestmark = pytest.mark.postgres
+
+
+def require_postgres_url() -> str:
+    if not DATABASE_TEST_URL:
+        pytest.skip("DATABASE_TEST_URL is not configured")
+    if not DATABASE_TEST_URL.startswith(("postgresql+psycopg://", "postgresql://")):
+        pytest.fail("DATABASE_TEST_URL must point to PostgreSQL")
+    return DATABASE_TEST_URL
+
+
+@pytest.fixture
+def migrated_database(monkeypatch: pytest.MonkeyPatch) -> Generator[str, None, None]:
+    url = require_postgres_url()
+    monkeypatch.setenv("DATABASE_URL", url)
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", url)
+    command.downgrade(config, "base")
+    command.upgrade(config, "head")
+    yield url
+    command.downgrade(config, "base")
+
+
+def test_migration_and_seed_are_consistent_and_idempotent(migrated_database: str) -> None:
+    engine = create_engine(migrated_database)
+    with Session(engine) as session, session.begin():
+        seed(session)
+    with Session(engine) as session, session.begin():
+        seed(session)
+
+    with Session(engine) as session:
+        assert session.scalar(select(func.count()).select_from(UserModel)) == 3
+        assert session.scalar(select(func.count()).select_from(TransactionModel)) == 15
+        assert session.scalar(select(func.count()).select_from(LedgerEntryModel)) == 30
+        for transaction_id in session.scalars(select(TransactionModel.id)):
+            debit, credit = session.execute(
+                select(
+                    func.coalesce(func.sum(LedgerEntryModel.debit), 0),
+                    func.coalesce(func.sum(LedgerEntryModel.credit), 0),
+                ).where(LedgerEntryModel.transaction_id == transaction_id)
+            ).one()
+            assert Decimal(debit) == Decimal(credit)
+
+
+def test_phase2_transfer_guarantees(
+    migrated_database: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine = create_engine(migrated_database)
+    with Session(engine) as session, session.begin():
+        seed(session)
+    with Session(engine) as session:
+        users = list(session.scalars(select(UserModel).order_by(UserModel.email)))
+        owner, other = users[0], users[1]
+        owner_accounts = AccountService(session).get_accounts(owner.id)
+        other_accounts = AccountService(session).get_accounts(other.id)
+        source, destination = owner_accounts[0], other_accounts[0]
+        with pytest.raises(ForbiddenError):
+            AccountService(session).get_account(source.id, other.id)
+
+        deny_service = TransferService(session, DenyAllTransferAuthorizationVerifier())
+        draft = deny_service.create_transfer_draft(
+            user_id=owner.id,
+            source_account_id=source.id,
+            destination_account_id=destination.id,
+            amount=Decimal("25.00"),
+            currency=Currency.CNY,
+            idempotency_key="phase2-success",
+        )
+        same = deny_service.create_transfer_draft(
+            user_id=owner.id,
+            source_account_id=source.id,
+            destination_account_id=destination.id,
+            amount=Decimal("25.00"),
+            currency=Currency.CNY,
+            idempotency_key="phase2-success",
+        )
+        assert same.id == draft.id
+        with pytest.raises(ConflictError):
+            deny_service.create_transfer_draft(
+                user_id=owner.id,
+                source_account_id=source.id,
+                destination_account_id=destination.id,
+                amount=Decimal("26.00"),
+                currency=Currency.CNY,
+                idempotency_key="phase2-success",
+            )
+        with pytest.raises(AuthorizationError):
+            deny_service.commit_transfer(draft.id, owner.id, "forged")
+
+        before_source, before_destination = source.balance, destination.balance
+        verifier = DevelopmentTransferAuthorizationVerifier({(draft.id, owner.id, "test-grant")})
+        transaction = TransferService(session, verifier).commit_transfer(
+            draft.id, owner.id, "test-grant"
+        )
+        session.refresh(source)
+        session.refresh(destination)
+        assert source.balance == before_source - Decimal("25.00")
+        assert destination.balance == before_destination + Decimal("25.00")
+        completed = session.get(TransferDraftModel, draft.id)
+        assert completed is not None and completed.status == TransferStatus.COMPLETED
+        assert (
+            TransferService(session, verifier).commit_transfer(draft.id, owner.id, "test-grant").id
+            == transaction.id
+        )
+        debit, credit = session.execute(
+            select(func.sum(LedgerEntryModel.debit), func.sum(LedgerEntryModel.credit)).where(
+                LedgerEntryModel.transaction_id == transaction.id
+            )
+        ).one()
+        assert debit == credit == Decimal("25.00")
+
+        expired_draft = deny_service.create_transfer_draft(
+            user_id=owner.id,
+            source_account_id=source.id,
+            destination_account_id=destination.id,
+            amount=Decimal("5.00"),
+            currency=Currency.CNY,
+            idempotency_key="phase2-expired",
+        )
+        expired_draft.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        session.commit()
+        with pytest.raises(ConflictError, match="expired"):
+            TransferService(
+                session,
+                DevelopmentTransferAuthorizationVerifier(
+                    {(expired_draft.id, owner.id, "expired-grant")}
+                ),
+            ).commit_transfer(expired_draft.id, owner.id, "expired-grant")
+        session.refresh(expired_draft)
+        assert expired_draft.status == TransferStatus.EXPIRED
+
+        rollback_draft = deny_service.create_transfer_draft(
+            user_id=owner.id,
+            source_account_id=source.id,
+            destination_account_id=destination.id,
+            amount=Decimal("10.00"),
+            currency=Currency.CNY,
+            idempotency_key="phase2-forced-rollback",
+        )
+        rollback_verifier = DevelopmentTransferAuthorizationVerifier(
+            {(rollback_draft.id, owner.id, "rollback-grant")}
+        )
+        session.refresh(source)
+        session.refresh(destination)
+        rollback_balances = source.balance, destination.balance
+
+        def fail_posting(*args: object, **kwargs: object) -> None:
+            del args, kwargs
+            raise RuntimeError("injected ledger failure")
+
+        monkeypatch.setattr(LedgerService, "post_transfer", fail_posting)
+        with pytest.raises(RuntimeError, match="injected ledger failure"):
+            TransferService(session, rollback_verifier).commit_transfer(
+                rollback_draft.id, owner.id, "rollback-grant"
+            )
+        session.refresh(source)
+        session.refresh(destination)
+        assert (source.balance, destination.balance) == rollback_balances
+
+
+def test_concurrent_transfers_cannot_overspend(migrated_database: str) -> None:
+    engine = create_engine(migrated_database)
+    with Session(engine) as session, session.begin():
+        seed(session)
+    with Session(engine) as session:
+        users = list(session.scalars(select(UserModel).order_by(UserModel.email)))
+        owner, recipient = users[0], users[1]
+        source = AccountService(session).get_accounts(owner.id)[0]
+        destination = AccountService(session).get_accounts(recipient.id)[0]
+        initial = source.balance
+        owner_id, source_id = owner.id, source.id
+        drafts = [
+            TransferService(session, DenyAllTransferAuthorizationVerifier()).create_transfer_draft(
+                user_id=owner.id,
+                source_account_id=source.id,
+                destination_account_id=destination.id,
+                amount=Decimal("8000.00"),
+                currency=Currency.CNY,
+                idempotency_key=f"concurrent-{index}",
+            )
+            for index in range(2)
+        ]
+        draft_ids = [item.id for item in drafts]
+
+    def commit(draft_id: UUID) -> str:
+        with Session(engine) as worker:
+            verifier = DevelopmentTransferAuthorizationVerifier(
+                {(draft_id, owner_id, f"grant-{draft_id}")}
+            )
+            try:
+                TransferService(worker, verifier).commit_transfer(
+                    draft_id, owner_id, f"grant-{draft_id}"
+                )
+                return "completed"
+            except InsufficientFundsError:
+                return "insufficient"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(commit, draft_ids))
+    assert sorted(results) == ["completed", "insufficient"]
+    with Session(engine) as session:
+        persisted_source = session.get(AccountModel, source_id)
+        assert persisted_source is not None
+        assert persisted_source.balance == initial - Decimal("8000.00")
+
+
+def test_posted_ledger_entries_are_immutable(migrated_database: str) -> None:
+    engine = create_engine(migrated_database)
+    with Session(engine) as session, session.begin():
+        seed(session)
+    with Session(engine) as session:
+        entry = session.scalars(select(LedgerEntryModel)).first()
+        assert entry is not None
+        entry.credit = Decimal("999.00")
+        with pytest.raises(DBAPIError, match="append-only"):
+            session.flush()
+
+
+def test_security_approval_payload_mfa_and_audit(migrated_database: str) -> None:
+    engine = create_engine(migrated_database)
+    with Session(engine) as session, session.begin():
+        seed(session)
+    with Session(engine) as session:
+        users = list(session.scalars(select(UserModel).order_by(UserModel.email)))
+        owner, recipient = users[0], users[1]
+        source = AccountService(session).get_accounts(owner.id)[0]
+        destination = AccountService(session).get_accounts(recipient.id)[0]
+        draft = TransferService(
+            session, DenyAllTransferAuthorizationVerifier()
+        ).create_transfer_draft(
+            user_id=owner.id,
+            source_account_id=source.id,
+            destination_account_id=destination.id,
+            amount=Decimal("800.00"),
+            currency=Currency.CNY,
+            idempotency_key="security-yellow",
+        )
+        approval = ApprovalService(session).create_for_operation(draft.id, owner.id)
+        grant = ApprovalService(session).decide(approval.id, owner.id, True)
+        assert grant is not None
+        TransferService(session, DatabaseTransferAuthorizationVerifier(session)).commit_transfer(
+            draft.id, owner.id, str(grant.id)
+        )
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(AuditEventModel)
+                .where(AuditEventModel.action == "transfer.commit")
+            )
+            == 1
+        )
+
+        tampered = TransferService(
+            session, DenyAllTransferAuthorizationVerifier()
+        ).create_transfer_draft(
+            user_id=owner.id,
+            source_account_id=source.id,
+            destination_account_id=destination.id,
+            amount=Decimal("100.00"),
+            currency=Currency.CNY,
+            idempotency_key="security-tamper",
+        )
+        tampered_approval = ApprovalService(session).create_for_operation(tampered.id, owner.id)
+        tampered_grant = ApprovalService(session).decide(tampered_approval.id, owner.id, True)
+        assert tampered_grant is not None
+        tampered.amount = Decimal("101.00")
+        session.commit()
+        with pytest.raises(AuthorizationError):
+            TransferService(
+                session, DatabaseTransferAuthorizationVerifier(session)
+            ).commit_transfer(tampered.id, owner.id, str(tampered_grant.id))
+
+        red = TransferService(
+            session, DenyAllTransferAuthorizationVerifier()
+        ).create_transfer_draft(
+            user_id=owner.id,
+            source_account_id=source.id,
+            destination_account_id=destination.id,
+            amount=Decimal("1500.00"),
+            currency=Currency.CNY,
+            idempotency_key="security-red",
+        )
+        red_approval = ApprovalService(session).create_for_operation(red.id, owner.id)
+        with pytest.raises(AuthorizationError):
+            ApprovalService(session).decide(red_approval.id, owner.id, True)
+        expired_challenge, expired_code = MockMfaProvider(session).create_challenge(
+            red_approval.id, owner.id
+        )
+        expired_challenge.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        session.commit()
+        with pytest.raises(AuthorizationError, match="expired"):
+            MockMfaProvider(session).verify(expired_challenge.id, owner.id, expired_code)
+        challenge, code = MockMfaProvider(session).create_challenge(red_approval.id, owner.id)
+        challenge_id = challenge.id
+        wrong_code = "999999" if code != "999999" else "888888"
+        for _ in range(3):
+            with pytest.raises(AuthorizationError):
+                MockMfaProvider(session).verify(challenge_id, owner.id, wrong_code)
+        lock = session.get(SafetyLockModel, owner.id)
+        assert lock is not None and lock.locked_until is not None
+
+        red_approval.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        session.commit()
+        expired = ApprovalService(session).get(red_approval.id, owner.id)
+        assert expired.status == ApprovalStatus.EXPIRED.value
+
+
+def test_analytics_cards_and_wealth_integration(migrated_database: str) -> None:
+    engine = create_engine(migrated_database)
+    with Session(engine) as session, session.begin():
+        seed(session)
+    with Session(engine) as session:
+        owner = session.scalar(
+            select(UserModel).where(UserModel.email == "lin.xiaoyu@example.invalid")
+        )
+        assert owner is not None
+        summary = BillAnalysisService(session).monthly_summary(owner.id, 2026, 3)
+        assert summary.total == Decimal("142.60")
+        subscription = SubscriptionService(session).list(owner.id)[0]
+        approval = ApprovalService(session).create_for_operation(subscription.id, owner.id)
+        grant = ApprovalService(session).decide(approval.id, owner.id, True)
+        assert grant is not None
+        cancelled = SubscriptionService(session).cancel(subscription.id, owner.id, str(grant.id))
+        assert not cancelled.active and cancelled.status == "CANCELLED"
+
+        card = CardService(session).list(owner.id)[0]
+        limit_approval = ApprovalService(session).create_for_operation(
+            card.id,
+            owner.id,
+            operation_type="card.limit",
+            amount=Decimal("6000.00"),
+        )
+        limit_grant = ApprovalService(session).decide(limit_approval.id, owner.id, True)
+        assert limit_grant is not None
+        with pytest.raises(AuthorizationError):
+            CardService(session).update_limit(
+                card.id, owner.id, Decimal("6500.00"), str(limit_grant.id)
+            )
+        assert CardService(session).update_limit(
+            card.id, owner.id, Decimal("6000.00"), str(limit_grant.id)
+        ).spending_limit == Decimal("6000.00")
+        freeze_approval = ApprovalService(session).create_for_operation(
+            card.id, owner.id, operation_type="card.freeze"
+        )
+        freeze_grant = ApprovalService(session).decide(freeze_approval.id, owner.id, True)
+        assert freeze_grant is not None
+        assert (
+            CardService(session)
+            .set_frozen(card.id, owner.id, True, str(freeze_grant.id))
+            .status.value
+            == "FROZEN"
+        )
+        unfreeze_approval = ApprovalService(session).create_for_operation(
+            card.id, owner.id, operation_type="card.unfreeze"
+        )
+        unfreeze_grant = ApprovalService(session).decide(unfreeze_approval.id, owner.id, True)
+        assert unfreeze_grant is not None
+        assert (
+            CardService(session)
+            .set_frozen(card.id, owner.id, False, str(unfreeze_grant.id))
+            .status.value
+            == "ACTIVE"
+        )
+        second_freeze_approval = ApprovalService(session).create_for_operation(
+            card.id, owner.id, operation_type="card.freeze"
+        )
+        assert second_freeze_approval.id != freeze_approval.id
+        second_freeze_grant = ApprovalService(session).decide(
+            second_freeze_approval.id, owner.id, True
+        )
+        assert second_freeze_grant is not None
+        CardService(session).set_frozen(card.id, owner.id, True, str(second_freeze_grant.id))
+        card_approval = ApprovalService(session).create_for_operation(card.id, owner.id)
+        challenge, code = MockMfaProvider(session).create_challenge(card_approval.id, owner.id)
+        card_grant = MockMfaProvider(session).verify(challenge.id, owner.id, code)
+        assert (
+            CardService(session).report_lost(card.id, owner.id, str(card_grant.id)).status.value
+            == "LOST"
+        )
+        with pytest.raises(ConflictError):
+            CardService(session).set_frozen(card.id, owner.id, False, str(unfreeze_grant.id))
+
+        assessment = WealthService(session).assess(owner.id, [5, 5, 5, 5, 5])
+        assert assessment.risk_tier.value == "RED"
+        product = session.scalar(
+            select(WealthProductModel).where(WealthProductModel.code == "DEMO-BOND-01")
+        )
+        assert product is not None
+        account = AccountService(session).get_accounts(owner.id)[0]
+        order = WealthService(session).create_order(
+            owner.id, account.id, product.id, Decimal("1000.00"), "wealth-integration"
+        )
+        order_approval = ApprovalService(session).create_for_operation(order.id, owner.id)
+        wealth_challenge, wealth_code = MockMfaProvider(session).create_challenge(
+            order_approval.id, owner.id
+        )
+        wealth_grant = MockMfaProvider(session).verify(wealth_challenge.id, owner.id, wealth_code)
+        completed = WealthService(session).commit_order(order.id, owner.id, str(wealth_grant.id))
+        assert completed.status == "COMPLETED"
+        holding = session.scalar(
+            select(WealthHoldingModel).where(
+                WealthHoldingModel.user_id == owner.id,
+                WealthHoldingModel.product_id == product.id,
+            )
+        )
+        assert holding is not None and holding.amount == Decimal("1000.00")
+
+        balance_after_subscription = account.balance
+        redemption = WealthService(session).create_redemption_order(
+            owner.id,
+            account.id,
+            product.id,
+            Decimal("400.00"),
+            "wealth-redemption-integration",
+        )
+        redemption_approval = ApprovalService(session).create_for_operation(redemption.id, owner.id)
+        redemption_challenge, redemption_code = MockMfaProvider(session).create_challenge(
+            redemption_approval.id, owner.id
+        )
+        redemption_grant = MockMfaProvider(session).verify(
+            redemption_challenge.id, owner.id, redemption_code
+        )
+        redeemed = WealthService(session).commit_order(
+            redemption.id, owner.id, str(redemption_grant.id)
+        )
+        session.refresh(account)
+        session.refresh(holding)
+        assert redeemed.status == "COMPLETED"
+        assert holding.amount == Decimal("600.00")
+        assert account.balance == balance_after_subscription + Decimal("400.00")
