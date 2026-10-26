@@ -44,3 +44,5 @@ dist/
 Thumbs.db
 
 workspace
+frontend-temp
+.tmp

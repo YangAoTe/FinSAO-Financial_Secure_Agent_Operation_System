@@ -338,6 +338,23 @@ Enum membership does not imply a public operation exists for every state. There 
 
 Product list filters are optional `product_type` and `risk_tier`. Recommendations can be empty before assessment. There are no current `/chat`, `/voice` or `/savings-pots` routes.
 
+The separately deployed Agent API exposes `POST /agent/requests` on its own base URL
+(development default `http://127.0.0.1:8100`). Its v1 body contains `session_id`,
+`message`, optional conversation messages and locale. It rejects client-supplied
+identity, risk, approval, MFA and authorization fields. P2 is single-turn: Green tools
+can execute, while writes stop at a draft/approval boundary; durable resume and SSE are
+not yet implemented.
+
+Durable P3 endpoints are `POST /agent/tasks`, `GET /agent/tasks/{task_id}`,
+`POST /agent/tasks/{task_id}/resume`, `/cancel`, `/takeover`,
+`GET /agent/tasks/{task_id}/events`, and
+`GET /agent/tasks/{task_id}/events/stream`. SSE uses the monotonically increasing
+event sequence as `id`; reconnect with `Last-Event-ID`. The resume body contains only
+the out-of-band `authorization_reference`; never copy it into chat history, model
+messages or persistent browser storage. Proactive reminder subscriptions use
+`PUT /agent/proactive/subscriptions/{event_kind}` and can always be disabled; emitted
+items are suggestions and never automatic payments.
+
 ### 6. Interaction rules and acceptance（交互规则与验收）
 
 Prepare → create approval → show exact operation → confirm (Yellow) or verify MFA (Red) → commit → reconcile persisted status → receipt. Sensitive card/subscription operations reuse their resource ID rather than creating a separate draft. Backend authorization references belong in trusted application/session handling; keep them out of prompts, logs and persistent browser storage.
@@ -597,6 +614,19 @@ ToolGateway 另用 `{status, data, error_code, message}`，状态为 SUCCESS、W
 | 服务状态 | /health；/health/db | 仅用于健康检查 |
 
 产品列表支持 product_type/risk_tier；月度统计传 year/month。当前没有 /chat、/voice、/savings-pots 路由，不能直接根据页面名构造请求。
+
+独立部署的 Agent API 在单独基地址（开发默认 `http://127.0.0.1:8100`）提供
+`POST /agent/requests`。v1 请求包含 `session_id`、`message`、可选会话消息和 locale，
+拒绝客户端提供身份、风险、审批、MFA 或授权字段。P2 仅支持单轮：Green 工具可以执行，
+写操作停在草稿/待审批边界；持久恢复和 SSE 尚未实现。
+
+P3 持久任务接口包括 `POST /agent/tasks`、`GET /agent/tasks/{task_id}`、
+`POST /agent/tasks/{task_id}/resume`、`/cancel`、`/takeover`、
+`GET /agent/tasks/{task_id}/events` 与 `/events/stream`。SSE 的 `id` 是单调递增事件
+序号，重连发送 `Last-Event-ID`。resume body 只携带带外取得的
+`authorization_reference`，不得进入聊天记录、模型消息或浏览器持久存储。主动提醒通过
+`PUT /agent/proactive/subscriptions/{event_kind}` 显式订阅并可关闭；提醒只给建议，绝不
+自动付款。
 
 ### 6. 敏感交互与验收
 

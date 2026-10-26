@@ -1,17 +1,32 @@
 import os
 from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
-from uuid import UUID
+from unittest.mock import Mock
+from uuid import UUID, uuid4
 
 import pytest
 from alembic import command
 from alembic.config import Config
+from langgraph.types import Command
+from pydantic import BaseModel
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
+from agent.contracts import (
+    AgentRequest,
+    AgentResponse,
+    AgentResponseStatus,
+    TrustedAgentContext,
+)
+from agent.durable import DurableTaskManager, TaskStatus
+from agent.graph import postgres_agent_graph
+from agent.proactive import ProactiveEventEngine
+from agent.service import AgentService
+from agent_persistence import SqlAlchemyTaskStore
+from agent_tools.contracts import ExecutionContext, ToolResult, ToolResultStatus
 from banking_core.app.domain.enums import Currency, TransferStatus
 from banking_core.app.persistence.models import (
     AccountModel,
@@ -49,6 +64,25 @@ from scripts.seed_demo_data import seed
 
 DATABASE_TEST_URL = os.getenv("DATABASE_TEST_URL")
 pytestmark = pytest.mark.postgres
+
+
+class _ReceiptFixture(BaseModel):
+    status: str = "COMPLETED"
+
+
+class _CountingGateway:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def execute(
+        self, *, tool_name: str, arguments: dict[str, object], context: ExecutionContext
+    ) -> ToolResult[BaseModel]:
+        del tool_name, arguments, context
+        self.calls += 1
+        return ToolResult(
+            status=ToolResultStatus.SUCCESS,
+            data=_ReceiptFixture(),
+        )
 
 
 def require_postgres_url() -> str:
@@ -90,6 +124,118 @@ def test_migration_and_seed_are_consistent_and_idempotent(migrated_database: str
                 ).where(LedgerEntryModel.transaction_id == transaction_id)
             ).one()
             assert Decimal(debit) == Decimal(credit)
+
+
+def test_agent_task_store_is_durable_owned_and_monotonic(migrated_database: str) -> None:
+    store = SqlAlchemyTaskStore(migrated_database)
+    user_id, other_id, session_id, task_id = uuid4(), uuid4(), uuid4(), uuid4()
+    request = AgentRequest(session_id=session_id, message="转账草稿")
+    context = TrustedAgentContext(
+        authenticated_user_id=user_id,
+        session_id=session_id,
+        task_id=task_id,
+        trace_id=uuid4(),
+    )
+    response = AgentResponse(
+        request_id=request.request_id,
+        session_id=session_id,
+        task_id=task_id,
+        status=AgentResponseStatus.WAITING_APPROVAL,
+        message="waiting",
+        result={"id": str(uuid4())},
+    )
+    task = store.create_from_response(request=request, context=context, response=response)
+    assert task.status == TaskStatus.WAITING_APPROVAL
+    assert store.get_task(task_id=task_id, user_id=other_id) is None
+    first = store.append_event(task_id=task_id, event_type="ONE", payload={})
+    second = store.append_event(task_id=task_id, event_type="TWO", payload={})
+    assert (first.sequence, second.sequence) == (1, 2)
+    assert store.claim_waiting(task_id=task_id, user_id=user_id) is not None
+    assert store.claim_waiting(task_id=task_id, user_id=user_id) is None
+    completed = store.transition(
+        task_id=task_id,
+        user_id=user_id,
+        status=TaskStatus.COMPLETED,
+        result={"status": "COMPLETED"},
+    )
+    assert completed.status == TaskStatus.COMPLETED
+
+
+def test_proactive_events_require_opt_in_and_are_rate_limited(migrated_database: str) -> None:
+    store = SqlAlchemyTaskStore(migrated_database)
+    engine = ProactiveEventEngine(store)
+    user_id = uuid4()
+    now = datetime(2026, 10, 26, 12, 0, tzinfo=UTC)
+    assert engine.suggest(user_id=user_id, event_kind="BUDGET_THRESHOLD", now=now) is None
+    engine.configure(
+        user_id=user_id,
+        event_kind="BUDGET_THRESHOLD",
+        enabled=True,
+        quiet_start=time(23, 0),
+        quiet_end=time(7, 0),
+        minimum_interval_minutes=60,
+    )
+    suggestion = engine.suggest(user_id=user_id, event_kind="BUDGET_THRESHOLD", now=now)
+    assert suggestion is not None
+    assert not suggestion.automatic_financial_action
+    assert engine.suggest(user_id=user_id, event_kind="BUDGET_THRESHOLD", now=now) is None
+
+
+@pytest.mark.asyncio
+async def test_duplicate_resume_does_not_repeat_commit(migrated_database: str) -> None:
+    store = SqlAlchemyTaskStore(migrated_database)
+    user_id, session_id, task_id, draft_id = uuid4(), uuid4(), uuid4(), uuid4()
+    request = AgentRequest(session_id=session_id, message="转账")
+    context = TrustedAgentContext(
+        authenticated_user_id=user_id,
+        session_id=session_id,
+        task_id=task_id,
+        trace_id=uuid4(),
+    )
+    store.create_from_response(
+        request=request,
+        context=context,
+        response=AgentResponse(
+            request_id=request.request_id,
+            session_id=session_id,
+            task_id=task_id,
+            status=AgentResponseStatus.WAITING_APPROVAL,
+            message="waiting",
+            result={"id": str(draft_id)},
+        ),
+    )
+    gateway = _CountingGateway()
+    manager = DurableTaskManager(Mock(spec=AgentService), gateway, store)
+    first = await manager.resume(
+        task_id=task_id, user_id=user_id, authorization_reference="grant-fixture"
+    )
+    second = await manager.resume(
+        task_id=task_id, user_id=user_id, authorization_reference="grant-replay"
+    )
+    assert first.status == second.status == TaskStatus.COMPLETED
+    assert gateway.calls == 1
+
+
+def test_langgraph_postgres_checkpoint_survives_runtime_restart(migrated_database: str) -> None:
+    connection_string = migrated_database.replace("postgresql+psycopg://", "postgresql://")
+    thread_id = str(uuid4())
+    config = {"configurable": {"thread_id": thread_id}}
+    state = {
+        "task_id": str(uuid4()),
+        "session_id": str(uuid4()),
+        "trace_id": str(uuid4()),
+        "request_text": "转账",
+        "needs_approval": True,
+        "approval_preview": {"amount": "800.00"},
+    }
+    with postgres_agent_graph(connection_string) as graph:
+        interrupted = graph.invoke(state, config)
+        assert interrupted["status"] == "WAITING_APPROVAL"
+    with postgres_agent_graph(connection_string) as restarted_graph:
+        resumed = restarted_graph.invoke(
+            Command(resume={"authorization_reference": "fixture-grant"}), config
+        )
+        assert resumed["status"] == "COMPLETED"
 
 
 def test_phase2_transfer_guarantees(
