@@ -70,6 +70,18 @@ class SlotTracker:
             currency = "CNY" if re.search(r"元|块|rmb|cny", text, re.IGNORECASE) else None
             if currency:
                 facts["currency"] = SlotFact("currency", currency, FactSource.USER_EXPLICIT)
+            beneficiary = re.search(
+                r"(?:给|向)\s*([A-Za-z\u4e00-\u9fff][A-Za-z0-9_\-\u4e00-\u9fff ]{0,39}?)"
+                r"\s*(?:转账|汇款|转)",
+                text,
+                re.IGNORECASE,
+            )
+            if beneficiary:
+                facts["beneficiary_query"] = SlotFact(
+                    "beneficiary_query",
+                    beneficiary.group(1).strip(),
+                    FactSource.USER_EXPLICIT,
+                )
         elif intent.intent in {Intent.GET_BALANCE, Intent.GET_TRANSACTIONS} and ids:
             facts["account_id"] = SlotFact(
                 "account_id", str(UUID(ids[0])), FactSource.USER_EXPLICIT
@@ -127,6 +139,13 @@ class SlotTracker:
                 ),
                 None,
             )
+            custom_category = re.search(
+                r"(?:类别|分类|category)\s*(?:是|为|[:：=])?\s*([^，,;\n]+)",
+                text,
+                re.IGNORECASE,
+            )
+            if category is None and custom_category:
+                category = custom_category.group(1).strip()
             month_match = re.search(r"(20\d{2})[-年/](\d{1,2})", text)
             if category:
                 facts["category"] = SlotFact("category", category, FactSource.USER_EXPLICIT)
@@ -141,16 +160,31 @@ class SlotTracker:
             name_match = re.search(
                 r"(?:创建|新增|设置)(?:一个)?(.{1,30}?)(?:储蓄罐|储藏罐|储蓄目标)", text
             )
-            date_match = re.search(r"(20\d{2}-\d{2}-\d{2})", text)
+            date_match = re.search(r"(20\d{2})[-./年](\d{1,2})[-./月](\d{1,2})(?:日)?", text)
             if name_match:
                 facts["name"] = SlotFact(
                     "name", name_match.group(1).strip(), FactSource.USER_EXPLICIT
                 )
+            else:
+                event_match = re.search(
+                    r"(?:我)?(妈妈|母亲|爸爸|父亲|奶奶|爷爷|外婆|外公|孩子|女儿|儿子)"
+                    r"(?:要|将要|快要)?(?:过)?生日",
+                    text,
+                )
+                if event_match:
+                    facts["name"] = SlotFact(
+                        "name",
+                        f"{event_match.group(1)}生日",
+                        FactSource.MODEL_INFERRED,
+                    )
             if amount:
                 facts["target_amount"] = SlotFact("target_amount", amount, FactSource.USER_EXPLICIT)
             if date_match:
                 facts["target_date"] = SlotFact(
-                    "target_date", date_match.group(1), FactSource.USER_EXPLICIT
+                    "target_date",
+                    f"{int(date_match.group(1)):04d}-{int(date_match.group(2)):02d}-"
+                    f"{int(date_match.group(3)):02d}",
+                    FactSource.USER_EXPLICIT,
                 )
             if re.search(r"元|块|rmb|cny", text, re.IGNORECASE):
                 facts["currency"] = SlotFact("currency", "CNY", FactSource.USER_EXPLICIT)

@@ -13,6 +13,11 @@ from agent.contracts import (
     AgentRequest,
     AgentResponse,
     AgentResponseStatus,
+    ClarificationField,
+    ClarificationOption,
+    ClarificationPayload,
+    ConversationMessage,
+    ConversationRole,
     TaskPlan,
     TrustedAgentContext,
 )
@@ -29,7 +34,9 @@ class Gateway(Protocol):
 
 
 class Router(Protocol):
-    def route(self, text: str) -> IntentResult | Awaitable[IntentResult]: ...
+    def route(
+        self, text: str, *, conversation: list[Any] | None = None
+    ) -> IntentResult | Awaitable[IntentResult]: ...
 
 
 class Planner(Protocol):
@@ -65,7 +72,8 @@ class AgentService:
         self._responses = responses or SafeResponseGenerator()
 
     async def handle(self, request: AgentRequest, context: TrustedAgentContext) -> AgentResponse:
-        routed = self._router.route(request.message)
+        contextual_text, active_conversation = self._active_context(request)
+        routed = self._router.route(request.message, conversation=active_conversation)
         intent = await routed if isinstance(routed, Awaitable) else routed
         if intent.intent == Intent.GENERAL_CHAT:
             return AgentResponse(
@@ -87,23 +95,10 @@ class AgentService:
                     "理财、储蓄罐或转账需求。"
                 ),
             )
-        slot_state = self._slots.extract(request.message, intent)
-        if intent.route == Route.PLANNER and slot_state.missing:
-            return AgentResponse(
-                request_id=request.request_id,
-                session_id=request.session_id,
-                task_id=context.task_id,
-                status=AgentResponseStatus.NEEDS_CLARIFICATION,
-                message=f"请补充：{', '.join(slot_state.missing)}。",
-            )
-        if intent.route == Route.RULE_DIRECT and slot_state.missing:
-            return AgentResponse(
-                request_id=request.request_id,
-                session_id=request.session_id,
-                task_id=context.task_id,
-                status=AgentResponseStatus.NEEDS_CLARIFICATION,
-                message=f"请明确选择账户：{', '.join(slot_state.missing)}。",
-            )
+        slot_state = self._slots.extract(contextual_text, intent)
+        inferred = any(fact.source.value == "MODEL_INFERRED" for fact in slot_state.facts.values())
+        if slot_state.missing or inferred:
+            return await self._clarification_response(request, context, intent, slot_state)
         try:
             actions = self._capabilities.allowed_actions(context=context, intent=intent.intent)
             planned = self._planner.create(
@@ -189,6 +184,161 @@ class AgentService:
                     message=last_result.message or "tool execution failed",
                 )
             ),
+        )
+
+    @staticmethod
+    def _active_context(
+        request: AgentRequest,
+    ) -> tuple[str, list[ConversationMessage]]:
+        active: list[ConversationMessage] = []
+        in_clarification = False
+        for message in reversed(request.conversation):
+            if message.role == ConversationRole.ASSISTANT:
+                if message.content.startswith("[CLARIFICATION]"):
+                    in_clarification = True
+                    active.append(message)
+                    continue
+                if in_clarification:
+                    break
+                continue
+            if message.role == ConversationRole.USER and in_clarification:
+                active.append(message)
+        active.reverse()
+        user_text = [
+            message.content
+            for message in active
+            if message.role == ConversationRole.USER
+        ]
+        user_text.append(request.message)
+        return "\n".join(user_text), active
+
+    async def _clarification_response(
+        self,
+        request: AgentRequest,
+        context: TrustedAgentContext,
+        intent: IntentResult,
+        slots: SlotState,
+    ) -> AgentResponse:
+        labels = {
+            "category": "预算类别",
+            "month_date": "预算月份",
+            "limit_amount": "预算上限",
+            "source_account_id": "付款账户",
+            "destination_account_id": "收款人",
+            "amount": "金额",
+            "currency": "币种",
+            "name": "储蓄目标名称",
+            "target_amount": "目标金额",
+            "target_date": "目标日期",
+            "account_id": "账户",
+            "product_id": "理财产品",
+            "resource_id": "目标资源",
+        }
+        input_types = {
+            "category": "combobox",
+            "month_date": "month",
+            "limit_amount": "amount",
+            "source_account_id": "select",
+            "destination_account_id": "select",
+            "account_id": "select",
+            "target_date": "date",
+            "amount": "amount",
+            "target_amount": "amount",
+        }
+        options: dict[str, list[ClarificationOption]] = {}
+        if intent.intent == Intent.CREATE_BUDGET:
+            options["category"] = [
+                ClarificationOption(value=label, label=f"{label}（{value}）")
+                for value, label in {
+                    "HOUSEHOLD": "家居",
+                    "GROCERIES": "日用",
+                    "TRANSPORT": "交通",
+                    "ENTERTAINMENT": "娱乐",
+                    "DINING": "餐饮",
+                    "HEALTHCARE": "医疗",
+                    "EDUCATION": "教育",
+                    "TRAVEL": "旅行",
+                }.items()
+            ]
+        execution_context = ExecutionContext(
+            authenticated_user_id=context.authenticated_user_id,
+            session_id=context.session_id,
+            task_id=context.task_id,
+            trace_id=context.trace_id,
+        )
+        if intent.intent == Intent.TRANSFER:
+            accounts = await self._gateway.execute(
+                tool_name="get_accounts", arguments={}, context=execution_context
+            )
+            if accounts.status == ToolResultStatus.SUCCESS and accounts.data is not None:
+                payload = accounts.data.model_dump(mode="json")
+                options["source_account_id"] = [
+                    ClarificationOption(
+                        value=str(item["id"]),
+                        label=f'{item["name"]} · {item["account_number"]}',
+                    )
+                    for item in payload.get("accounts", [])
+                    if item.get("status") == "ACTIVE"
+                ]
+            query = slots.facts.get("beneficiary_query")
+            if query is not None:
+                beneficiaries = await self._gateway.execute(
+                    tool_name="resolve_beneficiary",
+                    arguments={"query": query.value},
+                    context=execution_context,
+                )
+                if (
+                    beneficiaries.status == ToolResultStatus.SUCCESS
+                    and beneficiaries.data is not None
+                ):
+                    payload = beneficiaries.data.model_dump(mode="json")
+                    options["destination_account_id"] = [
+                        ClarificationOption(
+                            value=str(item["destination_account_id"]),
+                            label=(
+                                f'{item["name"]}'
+                                + (f'（{item["nickname"]}）' if item.get("nickname") else "")
+                            ),
+                        )
+                        for item in payload.get("matches", [])
+                    ]
+        field_names = list(dict.fromkeys([*intent.required_slots, *slots.facts.keys()]))
+        field_names = [name for name in field_names if name != "beneficiary_query"]
+        fields = [
+            ClarificationField(
+                name=name,
+                label=labels.get(name, name.replace("_", " ")),
+                input_type=input_types.get(name, "text"),
+                required=name in intent.required_slots,
+                value=slots.facts[name].value if name in slots.facts else None,
+                inferred=(
+                    name in slots.facts and slots.facts[name].source.value == "MODEL_INFERRED"
+                ),
+                options=options.get(name, []),
+            )
+            for name in field_names
+        ]
+        inferred_labels = [field.label for field in fields if field.inferred]
+        missing_labels = [labels.get(name, name.replace("_", " ")) for name in slots.missing]
+        if intent.intent == Intent.TRANSFER:
+            message = "请选择付款账户和收款人；系统不会要求你复制内部 UUID。"
+        elif inferred_labels:
+            suffix = f"，并补充：{'、'.join(missing_labels)}" if missing_labels else ""
+            message = f"我根据上下文推断了{'、'.join(inferred_labels)}{suffix}。请检查表单后确认。"
+        else:
+            message = f"为了继续，请补充：{'、'.join(missing_labels)}。"
+        clarification = ClarificationPayload(
+            kind="CONFIRM_INFERRED" if inferred_labels else "MISSING_FIELDS",
+            intent=intent.intent.value,
+            fields=fields,
+        )
+        return AgentResponse(
+            request_id=request.request_id,
+            session_id=request.session_id,
+            task_id=context.task_id,
+            status=AgentResponseStatus.NEEDS_CLARIFICATION,
+            message=message,
+            result={"clarification": clarification.model_dump(mode="json")},
         )
 
 

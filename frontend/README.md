@@ -24,6 +24,8 @@ DEVELOPMENT_USER_ID=<演示用户 UUID>
 AGENT_DEVELOPMENT_USER_ID=<与 DEVELOPMENT_USER_ID 相同的 UUID>
 MOCK_MFA_CODE=123456
 BANKING_BASE_URL=http://127.0.0.1:8000
+BANKING_SERVICE_TOKEN=development-only
+AGENT_API_TOKEN=development-agent-only
 ```
 
 生成确定性的 Lin 演示用户 UUID：
@@ -32,7 +34,7 @@ BANKING_BASE_URL=http://127.0.0.1:8000
 uv run python -c "from scripts.seed_demo_data import stable_id; print(stable_id('user:lin'))"
 ```
 
-身份只由 Core/Agent 服务端环境变量注入。浏览器请求不能提交或覆盖 `user_id`、风险等级、MFA、approval 或授权引用。
+身份只由 Core/Agent 服务端环境变量注入。浏览器请求不能提交或覆盖 `user_id`、风险等级、MFA、approval 或授权引用。Node 代理会覆盖浏览器提供的 `Authorization`，分别注入 Core 和 Agent 的开发服务令牌；示例值只能用于本机开发，部署前必须替换。
 
 ## 启动顺序
 
@@ -80,8 +82,10 @@ node server.mjs
 
 - 账户、余额、流水、转账、预算、订阅、卡片、理财及审批/MFA 页面调用真实 Banking Core。
 - AI 助手调用 `POST /api/agent/tasks`，请求包含稳定的浏览器会话 UUID，但不包含用户身份或授权字段。
+- 助手会发送最近的对话历史；只有带 `[CLARIFICATION]` 标记的未完成澄清链会参与 Slot 合并，已完成任务不会污染新请求。
 - 当前 Agent 完成请求时，前端展示后端 `TaskPlan`、工具步骤和 Banking Core 结果。
-- 当前 Agent 返回 `NEEDS_CLARIFICATION` 时，前端直接显示追问，不再在浏览器内执行另一套银行关键词规则。
+- 当前 Agent 返回 `NEEDS_CLARIFICATION` 时，前端展示结构化确认表单。账户与联系人由 Core 的只读工具提供选项，模型推断值标为“待确认”。
+- 密码、验证码、CVV 和完整卡号在浏览器与 Agent 请求契约两层阻止，不会进入外部 LLM；MFA 仍只提交给 Core 的独立验证接口。
 - `WAITING_APPROVAL` 或 `FAILED` 不会自动重放，防止重复草稿或重复写入；用户转到对应业务页面完成显式确认/MFA。
 - Agent 不可用时，业务页面仍可使用 Core，但助手不会在浏览器本地执行银行操作。
 - Core 不可用时会进入内置演示模式。演示模式不写数据库，不能当作后端联调成功的证据。
@@ -115,10 +119,10 @@ node --check frontend/demo-final/server.mjs
 
 ```powershell
 uv run pytest tests/test_agent_api.py tests/test_agent_routing_planning.py -q
-uv run ruff check agent frontend
+uv run ruff check agent banking_core tests
 ```
 
-`server.test.mjs` 会启动隔离的 Core/Agent 假服务，验证：页面可读取、查询字符串/请求体原样转发、Core 与 Agent 不串线、Agent OpenAPI 探测路径正确，以及未知前端路由返回 404。
+`server.test.mjs` 会启动隔离的 Core/Agent 假服务，验证：页面可读取、查询字符串/请求体原样转发、Core 与 Agent 不串线、代理覆盖并注入对应服务令牌、Agent OpenAPI 探测路径正确，以及未知前端路由返回 404。
 
 ## 常见问题
 

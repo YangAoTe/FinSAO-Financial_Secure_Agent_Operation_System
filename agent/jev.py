@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from typing import Protocol
+from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -76,8 +76,10 @@ class JevRoutingBoundary:
     def circuit_open(self) -> bool:
         return self._failures >= self._circuit_failure_threshold
 
-    async def route(self, text: str) -> IntentResult:
-        deterministic = self._rules.route(text)
+    async def route(
+        self, text: str, *, conversation: list[Any] | None = None
+    ) -> IntentResult:
+        deterministic = self._rules.route(text, conversation=conversation)
         if (
             not self._enabled
             or not self._adapter.available

@@ -11,6 +11,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class AgentSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
+    app_env: str = "development"
     model_provider: Literal["offline", "deepseek", "qwen", "local"] = "offline"
     model_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
     model_max_retries: int = Field(default=2, ge=0, le=5)
@@ -28,6 +29,7 @@ class AgentSettings(BaseSettings):
     local_model_api_key: SecretStr | None = None
 
     agent_development_user_id: UUID | None = None
+    agent_api_token: SecretStr = SecretStr("development-agent-only")
     banking_base_url: str = "http://127.0.0.1:8000"
     banking_service_token: SecretStr = SecretStr("development-only")
     agent_database_url: str = Field(

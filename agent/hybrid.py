@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -67,7 +68,9 @@ class HybridRouter:
         self._provider = provider
         self._confidence_threshold = confidence_threshold
 
-    async def route(self, text: str) -> IntentResult:
+    async def route(
+        self, text: str, *, conversation: list[Any] | None = None
+    ) -> IntentResult:
         deterministic = self._rules.route(text)
         if deterministic.route != Route.SAFE_FALLBACK:
             return deterministic
@@ -89,6 +92,7 @@ class HybridRouter:
                     f"支持的 intent: {supported}。"
                 ),
             ),
+            *(conversation or [])[-10:],
             ConversationMessage(role=ConversationRole.USER, content=text),
         ]
         try:

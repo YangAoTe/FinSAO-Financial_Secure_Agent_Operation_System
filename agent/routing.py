@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -89,7 +90,10 @@ class RuleRouter:
             required_slots=required_slots or [],
         )
 
-    def route(self, text: str) -> IntentResult:
+    def route(
+        self, text: str, *, conversation: list[Any] | None = None
+    ) -> IntentResult:
+        del conversation
         normalized = re.sub(r"\s+", "", text).lower()
         injected = any(marker in normalized for marker in self._INJECTION_MARKERS)
         if any(word in normalized for word in ("转账", "转给", "汇款")) or re.search(

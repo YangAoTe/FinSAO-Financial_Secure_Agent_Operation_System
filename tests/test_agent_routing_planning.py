@@ -182,7 +182,7 @@ async def test_injection_text_cannot_expand_tools() -> None:
 
 
 @pytest.mark.asyncio
-async def test_missing_transfer_slots_are_clarified_without_tool_call() -> None:
+async def test_missing_transfer_slots_use_only_read_only_discovery_tools() -> None:
     service, gateway, _ = _components()
     session_id = uuid4()
     response = await service.handle(
@@ -190,8 +190,9 @@ async def test_missing_transfer_slots_are_clarified_without_tool_call() -> None:
         _context(session_id),
     )
     assert response.status == AgentResponseStatus.NEEDS_CLARIFICATION
-    assert not gateway.calls
-    assert "source_account_id" in response.message
+    assert [call[0] for call in gateway.calls] == ["get_accounts", "resolve_beneficiary"]
+    assert "UUID" in response.message
+    assert "create_transfer_draft" not in {call[0] for call in gateway.calls}
 
 
 @pytest.mark.asyncio

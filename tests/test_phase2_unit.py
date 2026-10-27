@@ -44,3 +44,21 @@ def test_runtime_identity_cannot_be_supplied_by_header(
         assert response.status_code == 401
     finally:
         get_settings.cache_clear()
+
+
+def test_banking_core_rejects_direct_requests_without_service_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("DEVELOPMENT_USER_ID", str(uuid4()))
+    monkeypatch.setenv("BANKING_SERVICE_TOKEN", "core-test-secret")
+    get_settings.cache_clear()
+    try:
+        missing = TestClient(app).get("/accounts")
+        forged = TestClient(app).get(
+            "/accounts", headers={"Authorization": "Bearer wrong-secret"}
+        )
+        assert missing.status_code == 401
+        assert forged.status_code == 401
+    finally:
+        get_settings.cache_clear()

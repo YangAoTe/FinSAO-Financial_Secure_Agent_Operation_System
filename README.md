@@ -108,6 +108,17 @@ All errors use `{ "code": "...", "message": "..." }`. Decimal response values ar
 
 ## Security model
 
+The development Core and Agent APIs require separate Bearer service tokens. The local
+Node proxy injects them server-side and overwrites any browser-supplied Authorization
+header. Docker publishes PostgreSQL and Core on loopback only. The checked-in token
+values are development placeholders and must be replaced; this is service isolation,
+not a substitute for production OIDC/JWT user authentication or mTLS.
+
+Agent chat contracts reject passwords, one-time verification codes, CVV/CVC values and
+full card numbers before routing or persistence, so these values are not sent to an
+external model. Non-credential chat and explicit financial parameters can still be sent
+to the configured provider when the rule path falls back to the LLM.
+
 - Green: authenticated reads.
 - Yellow: explicit confirmation, including daily CNY outgoing transfers up to 1,000 and subscription cancellation.
 - Red: simulated MFA, including cumulative daily outgoing transfers above CNY 1,000, card loss, wealth subscription and redemption.

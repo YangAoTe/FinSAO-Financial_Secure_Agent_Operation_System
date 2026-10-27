@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -103,11 +104,19 @@ def get_proactive_engine() -> ProactiveEventEngine:
 
 def get_trusted_user_id(
     settings: Annotated[AgentSettings, Depends(get_agent_settings)],
+    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
 ) -> UUID:
-    if settings.agent_development_user_id is None:
+    expected = settings.agent_api_token.get_secret_value()
+    supplied = authorization.removeprefix("Bearer ") if authorization else ""
+    if (
+        settings.app_env != "development"
+        or settings.agent_development_user_id is None
+        or not expected
+        or not hmac.compare_digest(supplied, expected)
+    ):
         raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={"code": "IDENTITY_UNAVAILABLE", "message": "trusted identity unavailable"},
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "AUTHENTICATION_REQUIRED", "message": "valid API token required"},
         )
     return settings.agent_development_user_id
 

@@ -9,6 +9,8 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
+from agent.privacy import SensitiveDataGuard
+
 
 class StrictContract(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -39,6 +41,11 @@ class ConversationMessage(StrictContract):
             raise ValueError("user messages cannot be marked as system policy")
         return self
 
+    @field_validator("content")
+    @classmethod
+    def reject_authentication_secrets(cls, value: str) -> str:
+        return SensitiveDataGuard.ensure_safe(value)
+
 
 class AgentRequest(StrictContract):
     schema_version: Literal["v1"] = "v1"
@@ -47,6 +54,11 @@ class AgentRequest(StrictContract):
     message: Annotated[str, Field(min_length=1, max_length=20_000)]
     conversation: list[ConversationMessage] = Field(default_factory=list, max_length=100)
     locale: Literal["zh-CN", "en-US"] = "zh-CN"
+
+    @field_validator("message")
+    @classmethod
+    def reject_authentication_secrets(cls, value: str) -> str:
+        return SensitiveDataGuard.ensure_safe(value)
 
 
 class TrustedAgentContext:
@@ -140,6 +152,27 @@ class AgentResponseStatus(StrEnum):
     NEEDS_CLARIFICATION = "NEEDS_CLARIFICATION"
     WAITING_APPROVAL = "WAITING_APPROVAL"
     FAILED = "FAILED"
+
+
+class ClarificationOption(StrictContract):
+    value: str
+    label: str
+
+
+class ClarificationField(StrictContract):
+    name: str
+    label: str
+    input_type: Literal["text", "date", "month", "amount", "select", "combobox"] = "text"
+    required: bool = True
+    value: JsonValue | None = None
+    inferred: bool = False
+    options: list[ClarificationOption] = Field(default_factory=list)
+
+
+class ClarificationPayload(StrictContract):
+    kind: Literal["MISSING_FIELDS", "CONFIRM_INFERRED"]
+    intent: str
+    fields: list[ClarificationField]
 
 
 class AgentError(StrictContract):

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 from unittest.mock import Mock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,7 +12,14 @@ from pydantic import BaseModel
 
 from agent.capabilities import CapabilityBroker
 from agent.context import SlotTracker
-from agent.contracts import AgentRequest, AgentResponseStatus, TaskPlan
+from agent.contracts import (
+    AgentRequest,
+    AgentResponseStatus,
+    ConversationMessage,
+    ConversationRole,
+    TaskPlan,
+    TrustedAgentContext,
+)
 from agent.graph import build_runtime_agent_graph
 from agent.hybrid import HybridPlanner, HybridRouter
 from agent.planning import BaselinePlanner, PlanVerifier
@@ -68,6 +75,51 @@ class ReconciliationGateway:
             return ToolResult(
                 status=ToolResultStatus.SUCCESS,
                 data=StatusOutput(status="FROZEN"),
+            )
+        raise AssertionError(tool_name)
+
+
+class ClarificationGateway:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def execute(
+        self, *, tool_name: str, arguments: dict[str, Any], context: ExecutionContext
+    ) -> ToolResult[Any]:
+        del arguments, context
+        self.calls.append(tool_name)
+        if tool_name == "get_accounts":
+            class Accounts(BaseModel):
+                accounts: list[dict[str, Any]]
+
+            return ToolResult(
+                status=ToolResultStatus.SUCCESS,
+                data=Accounts(
+                    accounts=[
+                        {
+                            "id": str(uuid4()),
+                            "name": "日常账户",
+                            "account_number": "DEMO-001",
+                            "status": "ACTIVE",
+                        }
+                    ]
+                ),
+            )
+        if tool_name == "resolve_beneficiary":
+            class Beneficiaries(BaseModel):
+                matches: list[dict[str, Any]]
+
+            return ToolResult(
+                status=ToolResultStatus.SUCCESS,
+                data=Beneficiaries(
+                    matches=[
+                        {
+                            "destination_account_id": str(uuid4()),
+                            "name": "Friend",
+                            "nickname": "Friend",
+                        }
+                    ]
+                ),
             )
         raise AssertionError(tool_name)
 
@@ -220,3 +272,150 @@ def test_savings_api_and_tools_are_exposed() -> None:
     register_default_tools(registry, Mock())
     names = {item["name"] for item in registry.list_allowed()}
     assert {"list_savings_pots", "create_savings_pot", "contribute_savings_pot"} <= names
+
+
+@pytest.mark.asyncio
+async def test_transfer_clarification_returns_account_and_contact_choices() -> None:
+    registry = ToolRegistry()
+    register_default_tools(registry, Mock())
+    gateway = ClarificationGateway()
+    service = AgentService(
+        router=RuleRouter(),
+        slots=SlotTracker(),
+        planner=BaselinePlanner(),
+        verifier=PlanVerifier(registry),
+        capabilities=CapabilityBroker(registry),
+        gateway=gateway,
+    )
+    session_id = uuid4()
+    response = await service.handle(
+        AgentRequest(session_id=session_id, message="帮我给 Friend 转账10000元"),
+        _trusted_context(session_id),
+    )
+    assert response.status == AgentResponseStatus.NEEDS_CLARIFICATION
+    assert "UUID" in response.message
+    assert isinstance(response.result, dict)
+    clarification = response.result["clarification"]
+    assert isinstance(clarification, dict)
+    fields = {item["name"]: item for item in clarification["fields"]}
+    assert fields["source_account_id"]["options"]
+    assert fields["destination_account_id"]["options"][0]["label"] == "Friend（Friend）"
+    assert gateway.calls == ["get_accounts", "resolve_beneficiary"]
+
+
+@pytest.mark.asyncio
+async def test_followup_uses_active_clarification_context_and_requires_confirmation() -> None:
+    registry = ToolRegistry()
+    register_default_tools(registry, Mock())
+    gateway = CapturingGateway()
+    service = AgentService(
+        router=HybridRouter(
+            RuleRouter(),
+            FakeModelProvider(
+                {"intent": "CREATE_SAVINGS_POT", "confidence": 0.99, "reply": None}
+            ),
+        ),
+        slots=SlotTracker(),
+        planner=BaselinePlanner(),
+        verifier=PlanVerifier(registry),
+        capabilities=CapabilityBroker(registry),
+        gateway=gateway,
+    )
+    session_id = uuid4()
+    followup = await service.handle(
+        AgentRequest(
+            session_id=session_id,
+            message="妈妈，时间是2026.10.31",
+            conversation=[
+                ConversationMessage(
+                    role=ConversationRole.USER,
+                    content="下周我妈妈过生日，希望能预留1000块",
+                ),
+                ConversationMessage(
+                    role=ConversationRole.ASSISTANT,
+                    content="[CLARIFICATION] 请补充目标名称和日期。",
+                ),
+            ],
+        ),
+        _trusted_context(session_id),
+    )
+    assert followup.status == AgentResponseStatus.NEEDS_CLARIFICATION
+    assert isinstance(followup.result, dict)
+    clarification = followup.result["clarification"]
+    assert isinstance(clarification, dict)
+    fields = {item["name"]: item for item in clarification["fields"]}
+    assert fields["name"]["value"] == "妈妈生日"
+    assert fields["name"]["inferred"] is True
+    assert fields["target_amount"]["value"] == "1000.00"
+    assert fields["target_date"]["value"] == "2026-10-31"
+    assert gateway.calls == []
+
+    confirmed = await service.handle(
+        AgentRequest(
+            session_id=session_id,
+            message="创建一个妈妈生日储蓄罐，目标金额1000元，目标日期2026-10-31",
+        ),
+        _trusted_context(session_id),
+    )
+    assert confirmed.status == AgentResponseStatus.COMPLETED
+    assert gateway.calls == ["create_savings_pot"]
+
+
+def test_agent_contract_rejects_secrets_before_llm_boundary() -> None:
+    session_id = uuid4()
+    for message in (
+        "我的验证码是 246810",
+        "银行卡号 6222 0200 0000 0000",
+        "password: super-secret",
+        "CVV=123",
+    ):
+        with pytest.raises(ValueError, match="请勿在聊天中输入"):
+            AgentRequest(session_id=session_id, message=message)
+
+
+@pytest.mark.asyncio
+async def test_budget_clarification_supports_custom_category_and_month_picker() -> None:
+    service, gateway = build_service()
+    session_id = uuid4()
+    clarification_response = await service.handle(
+        AgentRequest(session_id=session_id, message="创建1000元预算"),
+        _trusted_context(session_id),
+    )
+    assert clarification_response.status == AgentResponseStatus.NEEDS_CLARIFICATION
+    assert isinstance(clarification_response.result, dict)
+    clarification = clarification_response.result["clarification"]
+    assert isinstance(clarification, dict)
+    fields = {item["name"]: item for item in clarification["fields"]}
+    assert fields["category"]["input_type"] == "combobox"
+    assert fields["category"]["options"]
+    assert fields["month_date"]["input_type"] == "month"
+    assert gateway.calls == []
+
+    confirmed = await service.handle(
+        AgentRequest(
+            session_id=session_id,
+            message="创建预算：类别 Demo Travel Fund，月份 2026-10-01，限额 1000 元",
+        ),
+        _trusted_context(session_id),
+    )
+    assert confirmed.status == AgentResponseStatus.COMPLETED
+    assert confirmed.plan is not None
+    call = confirmed.plan.steps[0].tool_call
+    assert call is not None
+    assert call.tool_name == "create_budget"
+    assert call.arguments == {
+        "category": "Demo Travel Fund",
+        "month": "2026-10-01",
+        "limit_amount": "1000.00",
+        "currency": "CNY",
+    }
+    assert gateway.calls == ["create_budget"]
+
+
+def _trusted_context(session_id: UUID) -> TrustedAgentContext:
+    return TrustedAgentContext(
+        authenticated_user_id=uuid4(),
+        session_id=session_id,
+        task_id=uuid4(),
+        trace_id=uuid4(),
+    )

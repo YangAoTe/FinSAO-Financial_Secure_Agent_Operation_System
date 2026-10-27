@@ -6,10 +6,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-function proxy(req, res, target, upstreamPath) {
+function proxy(req, res, target, upstreamPath, token) {
   const headers = { ...req.headers, host: target.host };
   delete headers.origin;
   delete headers.referer;
+  headers.authorization = `Bearer ${token}`;
   const upstream = http.request(
     { hostname: target.hostname, port: target.port, path: upstreamPath, method: req.method, headers },
     response => {
@@ -28,6 +29,8 @@ function proxy(req, res, target, upstreamPath) {
 export function createFrontendServer({
   coreBackend = process.env.CORE_BACKEND_URL || process.env.BACKEND_URL || 'http://127.0.0.1:8000',
   agentBackend = process.env.AGENT_BACKEND_URL || 'http://127.0.0.1:8100',
+  coreToken = process.env.BANKING_SERVICE_TOKEN || 'development-only',
+  agentToken = process.env.AGENT_API_TOKEN || 'development-agent-only',
 } = {}) {
   const core = new URL(coreBackend);
   const agent = new URL(agentBackend);
@@ -43,13 +46,13 @@ export function createFrontendServer({
       }
     }
     if (requestUrl.pathname.startsWith('/api/core/')) {
-      return proxy(req, res, core, requestUrl.pathname.slice('/api/core'.length) + requestUrl.search);
+      return proxy(req, res, core, requestUrl.pathname.slice('/api/core'.length) + requestUrl.search, coreToken);
     }
     if (requestUrl.pathname.startsWith('/api/agent/')) {
       const path = requestUrl.pathname === '/api/agent/openapi.json'
         ? '/openapi.json' + requestUrl.search
         : requestUrl.pathname.slice('/api'.length) + requestUrl.search;
-      return proxy(req, res, agent, path);
+      return proxy(req, res, agent, path, agentToken);
     }
     res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
     return res.end(JSON.stringify({ code: 'FRONTEND_ROUTE_NOT_FOUND' }));

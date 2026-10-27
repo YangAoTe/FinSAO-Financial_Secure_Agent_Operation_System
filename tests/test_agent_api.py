@@ -1,9 +1,13 @@
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
+import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 
 from agent.app import app, get_agent_service, get_task_store, get_trusted_user_id
+from agent.config import AgentSettings
 from agent.contracts import AgentResponse, AgentResponseStatus, TrustedAgentContext
 from agent.durable import DurableEvent
 
@@ -89,3 +93,15 @@ def test_sse_reconnect_uses_last_event_id() -> None:
             assert "event: EVENT_2" in response.text
     finally:
         app.dependency_overrides.clear()
+
+
+def test_agent_identity_requires_proxy_service_token() -> None:
+    user_id = uuid4()
+    settings = AgentSettings(
+        agent_development_user_id=user_id,
+        agent_api_token=SecretStr("agent-test-secret"),
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        get_trusted_user_id(settings, None)
+    assert exc_info.value.status_code == 401
+    assert get_trusted_user_id(settings, "Bearer agent-test-secret") == user_id

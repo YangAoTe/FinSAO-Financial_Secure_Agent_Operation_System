@@ -7,12 +7,12 @@ import { createFrontendServer } from './server.mjs';
 
 const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(server.address().port)));
 const close = server => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
-const fixture = name => http.createServer((req, res) => { let body = ''; req.on('data', chunk => { body += chunk; }); req.on('end', () => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ name, method: req.method, url: req.url, body })); }); });
+const fixture = name => http.createServer((req, res) => { let body = ''; req.on('data', chunk => { body += chunk; }); req.on('end', () => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ name, method: req.method, url: req.url, body, authorization: req.headers.authorization })); }); });
 
 test('serves the app and routes Core and Agent independently', async t => {
   const core = fixture('core'), agent = fixture('agent');
   const corePort = await listen(core), agentPort = await listen(agent);
-  const frontend = createFrontendServer({ coreBackend: `http://127.0.0.1:${corePort}`, agentBackend: `http://127.0.0.1:${agentPort}` });
+  const frontend = createFrontendServer({ coreBackend: `http://127.0.0.1:${corePort}`, agentBackend: `http://127.0.0.1:${agentPort}`, coreToken: 'core-fixture', agentToken: 'agent-fixture' });
   const frontendPort = await listen(frontend);
   t.after(async () => Promise.all([close(frontend), close(core), close(agent)]));
 
@@ -25,10 +25,10 @@ test('serves the app and routes Core and Agent independently', async t => {
   assert.doesNotThrow(() => new Function(script));
 
   const coreResponse = await fetch(`http://127.0.0.1:${frontendPort}/api/core/accounts?limit=2`);
-  assert.deepEqual(await coreResponse.json(), { name: 'core', method: 'GET', url: '/accounts?limit=2', body: '' });
+  assert.deepEqual(await coreResponse.json(), { name: 'core', method: 'GET', url: '/accounts?limit=2', body: '', authorization: 'Bearer core-fixture' });
   const agentResponse = await fetch(`http://127.0.0.1:${frontendPort}/api/agent/requests`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"message":"x"}' });
-  assert.deepEqual(await agentResponse.json(), { name: 'agent', method: 'POST', url: '/agent/requests', body: '{"message":"x"}' });
+  assert.deepEqual(await agentResponse.json(), { name: 'agent', method: 'POST', url: '/agent/requests', body: '{"message":"x"}', authorization: 'Bearer agent-fixture' });
   const openApi = await fetch(`http://127.0.0.1:${frontendPort}/api/agent/openapi.json`);
-  assert.deepEqual(await openApi.json(), { name: 'agent', method: 'GET', url: '/openapi.json', body: '' });
+  assert.deepEqual(await openApi.json(), { name: 'agent', method: 'GET', url: '/openapi.json', body: '', authorization: 'Bearer agent-fixture' });
   assert.equal((await fetch(`http://127.0.0.1:${frontendPort}/unknown`)).status, 404);
 });

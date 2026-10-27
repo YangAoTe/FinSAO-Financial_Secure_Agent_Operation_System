@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     sql_echo: bool = False
     development_user_id: UUID | None = None
     mock_mfa_code: SecretStr | None = None
+    banking_service_token: SecretStr = SecretStr("development-only")
 
 
 @lru_cache

@@ -23,7 +23,7 @@ class CategoryCorrectionRequest(BaseModel):
 
 
 class BudgetRequest(BaseModel):
-    category: str
+    category: str = Field(min_length=1, max_length=80)
     month: date
     limit_amount: MoneyDecimal = Field(gt=0)
     currency: Currency = Currency.CNY
