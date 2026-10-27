@@ -2,20 +2,23 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable
 from typing import Any, Protocol
 from uuid import uuid4
 
 from agent.capabilities import CapabilityBroker
-from agent.context import SlotTracker
+from agent.context import SlotState, SlotTracker
 from agent.contracts import (
     AgentError,
     AgentRequest,
     AgentResponse,
     AgentResponseStatus,
+    TaskPlan,
     TrustedAgentContext,
 )
-from agent.planning import BaselinePlanner, PlanValidationError, PlanVerifier
-from agent.routing import Route, RuleRouter
+from agent.planning import PlanValidationError, PlanVerifier
+from agent.responses import SafeResponseGenerator
+from agent.routing import Intent, IntentResult, Route
 from agent_tools.contracts import ExecutionContext, ToolResult, ToolResultStatus
 
 
@@ -25,16 +28,33 @@ class Gateway(Protocol):
     ) -> ToolResult[Any]: ...
 
 
+class Router(Protocol):
+    def route(self, text: str) -> IntentResult | Awaitable[IntentResult]: ...
+
+
+class Planner(Protocol):
+    def create(
+        self,
+        intent: IntentResult,
+        slots: SlotState,
+        *,
+        system_idempotency_key: str | None = None,
+        request: AgentRequest | None = None,
+        allowed_tools: list[dict[str, object]] | None = None,
+    ) -> TaskPlan | Awaitable[TaskPlan]: ...
+
+
 class AgentService:
     def __init__(
         self,
         *,
-        router: RuleRouter,
+        router: Router,
         slots: SlotTracker,
-        planner: BaselinePlanner,
+        planner: Planner,
         verifier: PlanVerifier,
         capabilities: CapabilityBroker,
         gateway: Gateway,
+        responses: SafeResponseGenerator | None = None,
     ) -> None:
         self._router = router
         self._slots = slots
@@ -42,18 +62,30 @@ class AgentService:
         self._verifier = verifier
         self._capabilities = capabilities
         self._gateway = gateway
+        self._responses = responses or SafeResponseGenerator()
 
-    async def handle(
-        self, request: AgentRequest, context: TrustedAgentContext
-    ) -> AgentResponse:
-        intent = self._router.route(request.message)
+    async def handle(self, request: AgentRequest, context: TrustedAgentContext) -> AgentResponse:
+        routed = self._router.route(request.message)
+        intent = await routed if isinstance(routed, Awaitable) else routed
+        if intent.intent == Intent.GENERAL_CHAT:
+            return AgentResponse(
+                request_id=request.request_id,
+                session_id=request.session_id,
+                task_id=context.task_id,
+                status=AgentResponseStatus.COMPLETED,
+                message=intent.reply or "你好，我可以帮助你处理银行账户与财务任务。",
+            )
         if intent.route == Route.SAFE_FALLBACK:
             return AgentResponse(
                 request_id=request.request_id,
                 session_id=request.session_id,
                 task_id=context.task_id,
                 status=AgentResponseStatus.NEEDS_CLARIFICATION,
-                message="当前请求超出已验证能力，请改为账户、余额、流水或转账草稿请求。",
+                message=(
+                    intent.reply
+                    or "当前请求无法安全识别，请明确说明账户、消费、预算、订阅、银行卡、"
+                    "理财、储蓄罐或转账需求。"
+                ),
             )
         slot_state = self._slots.extract(request.message, intent)
         if intent.route == Route.PLANNER and slot_state.missing:
@@ -73,18 +105,32 @@ class AgentService:
                 message=f"请明确选择账户：{', '.join(slot_state.missing)}。",
             )
         try:
-            plan = self._planner.create(
-                intent, slot_state, system_idempotency_key=str(context.task_id)
-            )
             actions = self._capabilities.allowed_actions(context=context, intent=intent.intent)
+            planned = self._planner.create(
+                intent,
+                slot_state,
+                system_idempotency_key=str(context.task_id),
+                request=request,
+                allowed_tools=self._capabilities.schemas(context=context, intent=intent.intent),
+            )
+            plan = await planned if isinstance(planned, Awaitable) else planned
             verified = self._verifier.verify(plan, actions)
         except PlanValidationError as exc:
+            needs_input = exc.code in {"INFERRED_ARGUMENT", "MISSING_SLOTS"}
             return AgentResponse(
                 request_id=request.request_id,
                 session_id=request.session_id,
                 task_id=context.task_id,
-                status=AgentResponseStatus.FAILED,
-                message="计划未通过确定性安全校验。",
+                status=(
+                    AgentResponseStatus.NEEDS_CLARIFICATION
+                    if needs_input
+                    else AgentResponseStatus.FAILED
+                ),
+                message=(
+                    "计划包含未经用户确认的金融参数，请补充或明确相关信息。"
+                    if needs_input
+                    else "计划未通过确定性安全校验。"
+                ),
                 error=AgentError(code=exc.code, message=str(exc)),
             )
         execution_context = ExecutionContext(
@@ -131,11 +177,7 @@ class AgentService:
             task_id=context.task_id,
             status=response_status,
             message=(
-                "操作结果来自 Banking Core。"
-                if response_status == AgentResponseStatus.COMPLETED
-                else "草稿已创建，必须完成审批后才能提交。"
-                if response_status == AgentResponseStatus.WAITING_APPROVAL
-                else "Banking Core 未确认操作成功。"
+                self._responses.compose(status=response_status, plan=plan, data=data)
             ),
             plan=plan,
             result=data,

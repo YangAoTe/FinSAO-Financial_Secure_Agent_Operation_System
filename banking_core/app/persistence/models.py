@@ -295,6 +295,50 @@ class WealthOrderModel(TimestampMixin, Base):
     transaction_id: Mapped[UUID | None] = mapped_column(ForeignKey("transactions.id"))
 
 
+class SavingsPotModel(TimestampMixin, Base):
+    __tablename__ = "savings_pots"
+    __table_args__ = (
+        CheckConstraint("target_amount > 0", name="ck_savings_pot_positive_target"),
+        CheckConstraint("saved_amount >= 0", name="ck_savings_pot_nonnegative_saved"),
+        UniqueConstraint("user_id", "idempotency_key", name="uq_savings_pot_user_key"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_amount: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    saved_amount: Mapped[Decimal] = mapped_column(MONEY, default=Decimal("0.00"), nullable=False)
+    currency: Mapped[Currency] = mapped_column(
+        enum_column(Currency, "savings_pot_currency"), nullable=False
+    )
+    target_date: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="ACTIVE", nullable=False)
+    allocation_mode: Mapped[str] = mapped_column(
+        String(32), default="VIRTUAL_ALLOCATION", nullable=False
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(120), nullable=False)
+
+
+class SavingsContributionModel(Base):
+    __tablename__ = "savings_contributions"
+    __table_args__ = (
+        CheckConstraint("amount > 0", name="ck_savings_contribution_positive"),
+        UniqueConstraint("user_id", "idempotency_key", name="uq_savings_contribution_user_key"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    pot_id: Mapped[UUID] = mapped_column(
+        ForeignKey("savings_pots.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    amount: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    note: Mapped[str | None] = mapped_column(String(255))
+    idempotency_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class AuditEventModel(Base):
     __tablename__ = "audit_events"
     __table_args__ = (Index("ix_audit_actor_occurred", "actor_user_id", "occurred_at"),)

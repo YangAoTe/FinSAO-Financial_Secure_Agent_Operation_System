@@ -296,6 +296,7 @@ class CommitTransferTool(BaseBankingTool[CommitTransferInput, TransferReceiptOut
 def register_default_tools(registry: ToolRegistry, client: BankingHttpClient) -> None:
     from agent_tools.analytics_tools import analytics_tools
     from agent_tools.cards_wealth_tools import cards_wealth_tools
+    from agent_tools.savings_tools import savings_tools
 
     tools: list[BaseBankingTool[Any, Any]] = [
         GetAccountsTool(client),
@@ -311,4 +312,6 @@ def register_default_tools(registry: ToolRegistry, client: BankingHttpClient) ->
     for tool in analytics_tools(client):
         registry.register(tool)
     for tool in cards_wealth_tools(client):
+        registry.register(tool)
+    for tool in savings_tools(client):
         registry.register(tool)

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import date
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
+from typing import Any
 from uuid import UUID
 
 from agent.routing import Intent, IntentResult
@@ -14,13 +16,14 @@ from agent.routing import Intent, IntentResult
 class FactSource(StrEnum):
     USER_EXPLICIT = "USER_EXPLICIT"
     TOOL_VERIFIED = "TOOL_VERIFIED"
+    SYSTEM_CONSTANT = "SYSTEM_CONSTANT"
     MODEL_INFERRED = "MODEL_INFERRED"
 
 
 @dataclass(frozen=True, slots=True)
 class SlotFact:
     name: str
-    value: str
+    value: Any
     source: FactSource
 
 
@@ -40,6 +43,15 @@ class SlotTracker:
     def extract(self, text: str, intent: IntentResult) -> SlotState:
         facts: dict[str, SlotFact] = {}
         ids = self._UUID.findall(text)
+        amount_match = self._AMOUNT.search(text)
+        amount: str | None = None
+        if amount_match:
+            try:
+                parsed = Decimal(amount_match.group(1)).quantize(Decimal("0.01"))
+                if parsed > 0:
+                    amount = format(parsed, "f")
+            except InvalidOperation:
+                pass
         if intent.intent == Intent.TRANSFER:
             if "余额" in text:
                 facts["include_balance"] = SlotFact(
@@ -53,16 +65,8 @@ class SlotTracker:
                 facts["destination_account_id"] = SlotFact(
                     "destination_account_id", str(UUID(ids[1])), FactSource.USER_EXPLICIT
                 )
-            amount_match = self._AMOUNT.search(text)
-            if amount_match:
-                try:
-                    amount = Decimal(amount_match.group(1)).quantize(Decimal("0.01"))
-                    if amount > 0:
-                        facts["amount"] = SlotFact(
-                            "amount", format(amount, "f"), FactSource.USER_EXPLICIT
-                        )
-                except InvalidOperation:
-                    pass
+            if amount:
+                facts["amount"] = SlotFact("amount", amount, FactSource.USER_EXPLICIT)
             currency = "CNY" if re.search(r"元|块|rmb|cny", text, re.IGNORECASE) else None
             if currency:
                 facts["currency"] = SlotFact("currency", currency, FactSource.USER_EXPLICIT)
@@ -70,5 +74,109 @@ class SlotTracker:
             facts["account_id"] = SlotFact(
                 "account_id", str(UUID(ids[0])), FactSource.USER_EXPLICIT
             )
+        elif intent.intent == Intent.ANALYZE_SPENDING:
+            match = re.search(r"(20\d{2})[-年/](\d{1,2})", text)
+            today = date.today()
+            year, month = (
+                (int(match.group(1)), int(match.group(2))) if match else (today.year, today.month)
+            )
+            source = FactSource.USER_EXPLICIT if match else FactSource.SYSTEM_CONSTANT
+            facts["year"] = SlotFact("year", str(year), source)
+            facts["month"] = SlotFact("month", str(month), source)
+        elif (
+            intent.intent
+            in {
+                Intent.GET_BUDGET_STATUS,
+                Intent.CANCEL_SUBSCRIPTION,
+                Intent.GET_CARD,
+                Intent.FREEZE_CARD,
+                Intent.UNFREEZE_CARD,
+                Intent.REPORT_CARD_LOST,
+            }
+            and ids
+        ):
+            facts["resource_id"] = SlotFact(
+                "resource_id", str(UUID(ids[0])), FactSource.USER_EXPLICIT
+            )
+        elif intent.intent == Intent.UPDATE_CARD_LIMIT:
+            if ids:
+                facts["card_id"] = SlotFact("card_id", str(UUID(ids[0])), FactSource.USER_EXPLICIT)
+            if amount:
+                facts["spending_limit"] = SlotFact(
+                    "spending_limit", amount, FactSource.USER_EXPLICIT
+                )
+        elif intent.intent == Intent.UPDATE_BUDGET:
+            if ids:
+                facts["budget_id"] = SlotFact(
+                    "budget_id", str(UUID(ids[0])), FactSource.USER_EXPLICIT
+                )
+            if amount:
+                facts["limit_amount"] = SlotFact("limit_amount", amount, FactSource.USER_EXPLICIT)
+        elif intent.intent == Intent.CREATE_BUDGET:
+            category = next(
+                (
+                    value
+                    for word, value in {
+                        "家居": "HOUSEHOLD",
+                        "日用": "GROCERIES",
+                        "交通": "TRANSPORT",
+                        "娱乐": "ENTERTAINMENT",
+                        "餐饮": "DINING",
+                    }.items()
+                    if word in text
+                ),
+                None,
+            )
+            month_match = re.search(r"(20\d{2})[-年/](\d{1,2})", text)
+            if category:
+                facts["category"] = SlotFact("category", category, FactSource.USER_EXPLICIT)
+            if month_match:
+                month_value = f"{int(month_match.group(1)):04d}-{int(month_match.group(2)):02d}-01"
+                facts["month_date"] = SlotFact("month_date", month_value, FactSource.USER_EXPLICIT)
+            if amount:
+                facts["limit_amount"] = SlotFact("limit_amount", amount, FactSource.USER_EXPLICIT)
+            if re.search(r"元|块|rmb|cny", text, re.IGNORECASE):
+                facts["currency"] = SlotFact("currency", "CNY", FactSource.USER_EXPLICIT)
+        elif intent.intent == Intent.CREATE_SAVINGS_POT:
+            name_match = re.search(
+                r"(?:创建|新增|设置)(?:一个)?(.{1,30}?)(?:储蓄罐|储藏罐|储蓄目标)", text
+            )
+            date_match = re.search(r"(20\d{2}-\d{2}-\d{2})", text)
+            if name_match:
+                facts["name"] = SlotFact(
+                    "name", name_match.group(1).strip(), FactSource.USER_EXPLICIT
+                )
+            if amount:
+                facts["target_amount"] = SlotFact("target_amount", amount, FactSource.USER_EXPLICIT)
+            if date_match:
+                facts["target_date"] = SlotFact(
+                    "target_date", date_match.group(1), FactSource.USER_EXPLICIT
+                )
+            if re.search(r"元|块|rmb|cny", text, re.IGNORECASE):
+                facts["currency"] = SlotFact("currency", "CNY", FactSource.USER_EXPLICIT)
+        elif intent.intent == Intent.CONTRIBUTE_SAVINGS_POT:
+            if ids:
+                facts["pot_id"] = SlotFact("pot_id", str(UUID(ids[0])), FactSource.USER_EXPLICIT)
+            if amount:
+                facts["amount"] = SlotFact("amount", amount, FactSource.USER_EXPLICIT)
+        elif intent.intent == Intent.COMPARE_WEALTH_PRODUCTS and len(ids) >= 2:
+            facts["product_ids"] = SlotFact(
+                "product_ids", [str(UUID(value)) for value in ids], FactSource.USER_EXPLICIT
+            )
+        elif intent.intent == Intent.ASSESS_RISK_PROFILE:
+            answers = [int(value) for value in re.findall(r"(?<!\d)([1-5])(?!\d)", text)]
+            if len(answers) == 5:
+                facts["answers"] = SlotFact("answers", answers, FactSource.USER_EXPLICIT)
+        elif intent.intent in {Intent.SUBSCRIBE_WEALTH, Intent.REDEEM_WEALTH}:
+            if ids:
+                facts["account_id"] = SlotFact(
+                    "account_id", str(UUID(ids[0])), FactSource.USER_EXPLICIT
+                )
+            if len(ids) > 1:
+                facts["product_id"] = SlotFact(
+                    "product_id", str(UUID(ids[1])), FactSource.USER_EXPLICIT
+                )
+            if amount:
+                facts["amount"] = SlotFact("amount", amount, FactSource.USER_EXPLICIT)
         missing = [slot for slot in intent.required_slots if slot not in facts]
         return SlotState(facts=facts, missing=missing)

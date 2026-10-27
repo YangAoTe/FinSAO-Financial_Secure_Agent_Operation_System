@@ -56,6 +56,7 @@ class SqlAlchemyTaskStore:
                 trace_id=context.trace_id,
                 status=response_status_to_task(response.status).value,
                 request_message=request.message,
+                public_message=response.message,
                 plan=response.plan.model_dump(mode="json") if response.plan else None,
                 result=response.result,
                 error_code=response.error.code if response.error else None,
@@ -96,6 +97,7 @@ class SqlAlchemyTaskStore:
         result: Any | None = None,
         error_code: str | None = None,
         recovery_action: str | None = None,
+        public_message: str | None = None,
     ) -> DurableTask:
         with self._sessions.begin() as session:
             model = self._owned_for_update(session, task_id, user_id)
@@ -108,6 +110,8 @@ class SqlAlchemyTaskStore:
                 model.result = result
             model.error_code = error_code
             model.recovery_action = recovery_action
+            if public_message is not None:
+                model.public_message = public_message
             model.version += 1
             model.updated_at = utcnow()
             session.flush()
@@ -190,9 +194,7 @@ class SqlAlchemyTaskStore:
             session.flush()
             return ProactiveSubscription.model_validate(model, from_attributes=True)
 
-    def reserve_proactive_delivery(
-        self, *, user_id: UUID, event_kind: str, now: datetime
-    ) -> bool:
+    def reserve_proactive_delivery(self, *, user_id: UUID, event_kind: str, now: datetime) -> bool:
         with self._sessions.begin() as session:
             model = session.scalar(
                 select(ProactiveSubscriptionModel)
@@ -241,6 +243,7 @@ class SqlAlchemyTaskStore:
             trace_id=model.trace_id,
             status=TaskStatus(model.status),
             request_message=model.request_message,
+            public_message=model.public_message,
             plan=model.plan,
             result=model.result,
             error_code=model.error_code,

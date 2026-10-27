@@ -29,6 +29,7 @@ class AgentTaskModel(Base):
     trace_id: Mapped[UUID]
     status: Mapped[str] = mapped_column(String(32), index=True)
     request_message: Mapped[str] = mapped_column(Text)
+    public_message: Mapped[str | None] = mapped_column(Text)
     plan: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     result: Mapped[Any | None] = mapped_column(JSONB)
     error_code: Mapped[str | None] = mapped_column(String(80))

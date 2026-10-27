@@ -66,6 +66,10 @@ class BudgetOutput(BaseModel):
     currency: Currency
 
 
+class BudgetListOutput(BaseModel):
+    items: list[BudgetOutput]
+
+
 class BudgetStatusOutput(BaseModel):
     limit: Decimal
     used: Decimal
@@ -131,7 +135,7 @@ class AnalyticsTool(BaseBankingTool[BaseModel, BaseModel]):
                 )
             values = {"authorization_ref": context.authorization_reference}
         raw_model = self.output_model
-        if self.name in {"list_subscriptions", "detect_recurring_payments"}:
+        if self.name in {"list_budgets", "list_subscriptions", "detect_recurring_payments"}:
             from pydantic import RootModel
 
             response = await self.client.request(
@@ -186,6 +190,16 @@ def analytics_tools(client: BankingHttpClient) -> list[BaseBankingTool[Any, Any]
             TransactionOutput,
             "PATCH",
             "/transactions/{transaction_id}/category",
+        ),
+        (
+            "list_budgets",
+            "List budgets",
+            "budget.query",
+            "GREEN",
+            NoInput,
+            BudgetListOutput,
+            "GET",
+            "/budgets",
         ),
         (
             "get_budget_status",

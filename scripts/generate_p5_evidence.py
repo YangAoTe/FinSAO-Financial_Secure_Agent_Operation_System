@@ -40,9 +40,7 @@ def main() -> None:
                     review.get("review_decision", ""),
                     review.get("review_notes", ""),
                 )
-    with review_path.open(
-        "w", encoding="utf-8-sig", newline=""
-    ) as handle:
+    with review_path.open("w", encoding="utf-8-sig", newline="") as handle:
         fieldnames = [
             "sample_id",
             "split",

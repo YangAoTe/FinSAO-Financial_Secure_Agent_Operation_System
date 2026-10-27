@@ -25,6 +25,7 @@ from banking_core.app.persistence.models import (
     BudgetModel,
     CardModel,
     LedgerEntryModel,
+    SavingsPotModel,
     SubscriptionModel,
     TransactionModel,
     UserModel,
@@ -230,6 +231,21 @@ def seed(session: Session) -> None:
                 last_four=f"{1000 + user_number:04d}",
                 status=CardStatus.ACTIVE,
                 spending_limit=Decimal("5000.00"),
+            ),
+        )
+        add_once(
+            session,
+            SavingsPotModel(
+                id=stable_id(f"savings-pot:{user_key}:travel"),
+                user_id=stable_id(f"user:{user_key}"),
+                name="Demo Travel Fund",
+                target_amount=Decimal("8000.00"),
+                saved_amount=Decimal("2400.00"),
+                currency=Currency.CNY,
+                target_date=date(2027, 5, 1),
+                status="ACTIVE",
+                allocation_mode="VIRTUAL_ALLOCATION",
+                idempotency_key=f"seed-{user_key}-travel",
             ),
         )
 

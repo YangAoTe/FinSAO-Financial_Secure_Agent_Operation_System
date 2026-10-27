@@ -26,7 +26,7 @@ MOCK_MFA_CODE=123456   # 6 位数字，红色操作验证码
 node server.mjs            # 默认 http://127.0.0.1:5173
 CORE_BACKEND_URL=http://host:8000 AGENT_BACKEND_URL=http://host:8100 PORT=5173 node server.mjs
 ```
-页面顶部会分别显示 Core 与 Agent 连接状态；Core 不可达时进入演示模式，Agent 不可达时只回退助手路由，不影响 Core 业务页面。右上角“JSON 日志”可查看已脱敏的请求/响应。
+页面顶部会分别显示 Core 与 Agent 连接状态；Core 不可达时进入演示模式，Agent 不可达时不影响 Core 业务页面，但聊天不会在浏览器本地执行银行操作。右上角“JSON 日志”可查看已脱敏的请求/响应。
 
 ## 3. 演示脚本（评委路径）
 1. 助手页：`查询余额，并给 Friend 转 800 元` → 黄色确认 → 回执（展示工具调用轨迹）。
@@ -35,9 +35,9 @@ CORE_BACKEND_URL=http://host:8000 AGENT_BACKEND_URL=http://host:8100 PORT=5173 n
 注意：转账场景假设当日全新数据库；重置演示数据用 `docker compose down -v`（仅限一次性演示库）。
 
 ## 已知限制
-- 聊天优先连接当前 `/agent/requests`，未覆盖意图再使用页面内确定性工作流；语音仍未接入。
+- 聊天统一创建 `/agent/tasks`，规则快路径和可选 LLM fallback 都位于后端；语音仍未接入。
 - Jev 按要求保持未启用；它是可插拔路由，不是前后端连接的依赖。
-- 储蓄罐：后端无接口，未实现（不放置假数据）。
+- 储蓄罐已接入持久化 API，采用虚拟分配语义，不扣减或冻结账户余额。
 - 种子数据只含 2026-01～03 的流水，总览默认统计 2026-03。
 
 ## 赛题对照（AI 赛道）

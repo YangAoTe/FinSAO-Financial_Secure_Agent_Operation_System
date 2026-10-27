@@ -1,6 +1,48 @@
 # AI Banking Agent — Backend Architecture
 
-> **Document status:** Planned architecture (not a claim of completed implementation)  
+## 当前实际运行架构（2026-10-27，Task 2 完成后）
+
+```mermaid
+flowchart TB
+    U["用户"] --> UI["浏览器前端"]
+    UI --> NP["Node.js 反向代理"]
+    NP -->|"结构化业务页面 /api/core/*"| CORE
+    NP -->|"自然语言 /api/agent/tasks"| API["Agent FastAPI + 可信上下文"]
+
+    API --> LG["LangGraph<br/>PostgreSQL checkpoint"]
+    LG --> HR["HybridRouter"]
+    HR -->|"明确请求"| RR["RuleRouter<br/>确定性快路径"]
+    HR -->|"规则未识别"| LLM["LLM 结构化分类<br/>DeepSeek / Qwen / Local"]
+    RR --> SLOT["SlotTracker"]
+    LLM --> SLOT
+    SLOT -->|"规则路径"| BP["BaselinePlanner"]
+    SLOT -->|"LLM 路径"| LP["LLM 候选 TaskPlan / DAG"]
+    BP --> SAFE["CapabilityBroker + PlanVerifier"]
+    LP --> SAFE
+    SAFE --> GW["Typed ToolGateway"]
+    GW --> CORE["Banking Core FastAPI"]
+    CORE --> SEC["所有权 + 风险 + Approval / MFA + 幂等"]
+    SEC --> DB[("PostgreSQL<br/>金融状态 / tasks / checkpoints")]
+    GW --> RESP["SafeResponseGenerator<br/>只使用 ToolResult"]
+    GW -->|"WAITING_APPROVAL"| PAUSE["LangGraph interrupt / resume"]
+    PAUSE --> UI
+    RESP --> API --> NP --> UI
+
+    JEV["Jev adapter<br/>当前仍未启用"] -.-> HR
+
+    classDef rule fill:#fef3c7,stroke:#b45309,color:#78350f;
+    classDef service fill:#dbeafe,stroke:#1d4ed8,color:#1e3a8a;
+    classDef model fill:#ede9fe,stroke:#7c3aed,color:#4c1d95;
+    classDef inactive fill:#f3f4f6,stroke:#6b7280,color:#4b5563,stroke-dasharray:5 5;
+    class RR,SLOT,BP,SAFE rule;
+    class API,LG,GW,CORE,SEC,DB,RESP,PAUSE service;
+    class LLM,LP model;
+    class JEV inactive;
+```
+
+> **图例：**黄色是确定性规则与安全校验；紫色是当前已经接入的 LLM 分支；蓝色是在线服务、编排和执行层；灰色虚线 Jev 仍未启用。前端聊天不再执行银行关键词回退，LLM 只生成分类或候选计划，不能批准或直接执行金融操作。
+
+> **Document status:** 顶部为 Task 2 完成后的实际架构；下文保留最初的规划基线供对照。
 > **Scope:** Python-only Mock Banking Core, Typed Agent Tools, and their integration with the future AI Agent  
 > **Primary goals:** financial correctness, controlled tool execution, clear contracts, auditability, and rapid MVP delivery
 

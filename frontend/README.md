@@ -79,11 +79,11 @@ node server.mjs
 ## 接入行为
 
 - 账户、余额、流水、转账、预算、订阅、卡片、理财及审批/MFA 页面调用真实 Banking Core。
-- AI 助手先调用 `POST /api/agent/requests`，请求包含稳定的浏览器会话 UUID，但不包含用户身份或授权字段。
+- AI 助手调用 `POST /api/agent/tasks`，请求包含稳定的浏览器会话 UUID，但不包含用户身份或授权字段。
 - 当前 Agent 完成请求时，前端展示后端 `TaskPlan`、工具步骤和 Banking Core 结果。
-- 当前 Agent 返回 `NEEDS_CLARIFICATION` 时，前端对其尚未覆盖的消费、预算、订阅、卡片和理财意图使用已有的确定性 Core 工作流。
+- 当前 Agent 返回 `NEEDS_CLARIFICATION` 时，前端直接显示追问，不再在浏览器内执行另一套银行关键词规则。
 - `WAITING_APPROVAL` 或 `FAILED` 不会自动重放，防止重复草稿或重复写入；用户转到对应业务页面完成显式确认/MFA。
-- Agent 不可用时，业务页面仍可使用 Core，助手明确标记回退状态。
+- Agent 不可用时，业务页面仍可使用 Core，但助手不会在浏览器本地执行银行操作。
 - Core 不可用时会进入内置演示模式。演示模式不写数据库，不能当作后端联调成功的证据。
 
 右上角“JSON 日志”显示最多 40 次请求/响应，并隐藏授权引用与六位 MFA 验证码。
@@ -97,9 +97,9 @@ node server.mjs
 | 预算、消费分析、订阅与周期扣费线索 | Banking Core | 已接入 |
 | 卡片冻结/解冻/挂失/限额 | Banking Core | 已接入 |
 | 风险测评、产品比较、申购/赎回 | Banking Core | 已接入 |
-| Agent 单轮请求、计划及结果 | Agent API | 已接入 |
+| Agent 持久任务、计划及结果 | Agent API + LangGraph | 已接入 |
 | Jev 路由 | 无 | 按要求暂不接入，保持可插拔 |
-| 储蓄罐 | 浏览器预览数据 | 后端尚未实现，不产生真实资金操作 |
+| 储蓄罐 | Banking Core + Typed Tools | 虚拟分配模式；持久化目标和历史，但不移动账户资金 |
 | 语音 | 无 | 尚未接入 |
 
 ## 验证
@@ -126,7 +126,8 @@ uv run ruff check agent frontend
 - **页面显示 Agent 未连接**：确认 8100 端口和 `AGENT_DEVELOPMENT_USER_ID`；它应与 Core 演示用户一致。
 - **Agent 能连通但工具调用失败**：检查 `BANKING_BASE_URL` 和 Core/Agent 的 `BANKING_SERVICE_TOKEN` 配置是否一致。
 - **Red 操作无法验证**：检查 `MOCK_MFA_CODE`，演示默认使用六位数字 `123456`。
-- **Durable task 接口失败**：确认 `AGENT_DATABASE_URL` 指向已迁移的 PostgreSQL；单轮 `/agent/requests` 与持久任务的数据库要求不同。
+- **Durable task 接口失败**：确认 `AGENT_DATABASE_URL` 指向已迁移的 PostgreSQL；若设置了 `AGENT_CHECKPOINT_DATABASE_URL`，还要确认 LangGraph checkpoint 数据库可连接。
+- **规则外输入仍无法回复**：将 `MODEL_PROVIDER` 设置为 `deepseek`、`qwen` 或 `local`，并配置对应凭据/模型；`offline` 模式会安全返回能力范围。
 - **端口已占用**：用 `PORT`、`CORE_BACKEND_URL`、`AGENT_BACKEND_URL` 覆盖默认值。
 
 不要对含有真实银行信息的数据库运行演示重置命令。当前项目只应使用虚构比赛数据。

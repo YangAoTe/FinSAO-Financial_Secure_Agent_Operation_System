@@ -77,9 +77,7 @@ def _success_response(request: httpx.Request) -> httpx.Response:
     return httpx.Response(
         200,
         json={
-            "choices": [
-                {"message": {"content": '{"intent":"GET_BALANCE","confidence":0.9}'}}
-            ],
+            "choices": [{"message": {"content": '{"intent":"GET_BALANCE","confidence":0.9}'}}],
             "usage": {"prompt_tokens": 8, "completion_tokens": 5, "total_tokens": 13},
         },
     )
@@ -124,9 +122,7 @@ async def test_local_adapter_sends_strict_json_schema() -> None:
         return httpx.Response(
             200,
             json={
-                "choices": [
-                    {"message": {"content": '{"intent":"GET_BALANCE","confidence":0.9}'}}
-                ]
+                "choices": [{"message": {"content": '{"intent":"GET_BALANCE","confidence":0.9}'}}]
             },
         )
 
@@ -227,9 +223,7 @@ async def test_local_provider_needs_model_but_not_cloud_key() -> None:
         return httpx.Response(
             200,
             json={
-                "choices": [
-                    {"message": {"content": '{"intent":"GET_BALANCE","confidence":0.9}'}}
-                ]
+                "choices": [{"message": {"content": '{"intent":"GET_BALANCE","confidence":0.9}'}}]
             },
         )
 

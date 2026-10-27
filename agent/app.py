@@ -12,12 +12,18 @@ from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.responses import StreamingResponse
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.postgres import PostgresSaver
 
 from agent.capabilities import CapabilityBroker
+from agent.checkpoints import AsyncFromSyncPostgresSaver
 from agent.config import AgentSettings, get_agent_settings
 from agent.context import SlotTracker
 from agent.contracts import AgentRequest, AgentResponse, TrustedAgentContext
 from agent.durable import DurableEvent, DurableTask, DurableTaskManager, ResumeRequest
+from agent.factory import build_model_provider
+from agent.graph import build_runtime_agent_graph
+from agent.hybrid import HybridPlanner, HybridRouter
 from agent.planning import BaselinePlanner, PlanVerifier
 from agent.proactive import (
     ProactiveConfigRequest,
@@ -40,23 +46,40 @@ _banking_client = BankingHttpClient(
 )
 _registry = ToolRegistry()
 register_default_tools(_registry, _banking_client)
+_model_provider = build_model_provider(_settings)
+_gateway = ToolGateway(_registry)
 _service = AgentService(
-    router=RuleRouter(),
+    router=HybridRouter(RuleRouter(), _model_provider),
     slots=SlotTracker(),
-    planner=BaselinePlanner(),
+    planner=HybridPlanner(BaselinePlanner(), _model_provider),
     verifier=PlanVerifier(_registry),
     capabilities=CapabilityBroker(_registry),
-    gateway=ToolGateway(_registry),
+    gateway=_gateway,
 )
 _task_store = SqlAlchemyTaskStore(_settings.agent_database_url)
-_task_manager = DurableTaskManager(_service, ToolGateway(_registry), _task_store)
+_runtime_graph = build_runtime_agent_graph(_service, _gateway, MemorySaver())
+_task_manager = DurableTaskManager(_service, _gateway, _task_store, _runtime_graph)
 _proactive_engine = ProactiveEventEngine(_task_store)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    yield
-    await _banking_client.close()
+    global _task_manager
+    try:
+        if _settings.agent_checkpoint_database_url:
+            with PostgresSaver.from_conn_string(_settings.agent_checkpoint_database_url) as saver:
+                saver.setup()
+                graph = build_runtime_agent_graph(
+                    _service, _gateway, AsyncFromSyncPostgresSaver(saver)
+                )
+                _task_manager = DurableTaskManager(_service, _gateway, _task_store, graph)
+                yield
+        else:
+            yield
+    finally:
+        await _banking_client.close()
+        if _model_provider is not None:
+            await _model_provider.close()
 
 
 app = FastAPI(title="FinPilot Agent API", version="0.1.0", lifespan=lifespan)
@@ -213,9 +236,7 @@ def stream_task_events(
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
-@app.put(
-    "/agent/proactive/subscriptions/{event_kind}", response_model=ProactiveSubscription
-)
+@app.put("/agent/proactive/subscriptions/{event_kind}", response_model=ProactiveSubscription)
 def configure_proactive_subscription(
     event_kind: str,
     request: ProactiveConfigRequest,
@@ -232,9 +253,7 @@ def configure_proactive_subscription(
     )
 
 
-@app.post(
-    "/agent/proactive/suggestions/{event_kind}", response_model=ProactiveSuggestion | None
-)
+@app.post("/agent/proactive/suggestions/{event_kind}", response_model=ProactiveSuggestion | None)
 def emit_proactive_suggestion(
     event_kind: str,
     engine: Annotated[ProactiveEventEngine, Depends(get_proactive_engine)],

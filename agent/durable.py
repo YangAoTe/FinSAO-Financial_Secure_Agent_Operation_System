@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import UUID, uuid4
 
+from langgraph.types import Command
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from agent.contracts import AgentRequest, AgentResponse, AgentResponseStatus, TrustedAgentContext
@@ -16,6 +17,7 @@ from agent_tools.contracts import ExecutionContext, ToolResultStatus
 
 class TaskStatus(StrEnum):
     RUNNING = "RUNNING"
+    NEEDS_CLARIFICATION = "NEEDS_CLARIFICATION"
     WAITING_APPROVAL = "WAITING_APPROVAL"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
@@ -31,6 +33,7 @@ class DurableTask(BaseModel):
     trace_id: UUID
     status: TaskStatus
     request_message: str
+    public_message: str | None = None
     plan: dict[str, JsonValue] | None = None
     result: JsonValue | None = None
     error_code: str | None = None
@@ -66,6 +69,7 @@ class TaskStore(Protocol):
         result: JsonValue | None = None,
         error_code: str | None = None,
         recovery_action: str | None = None,
+        public_message: str | None = None,
     ) -> DurableTask: ...
 
     def append_event(
@@ -83,18 +87,40 @@ class ResumeRequest(BaseModel):
 
 
 class DurableTaskManager:
-    def __init__(self, service: AgentService, gateway: Gateway, store: TaskStore) -> None:
+    def __init__(
+        self,
+        service: AgentService,
+        gateway: Gateway,
+        store: TaskStore,
+        graph: Any | None = None,
+    ) -> None:
         self._service = service
         self._gateway = gateway
         self._store = store
+        self._graph = graph
 
-    async def create(
-        self, request: AgentRequest, context: TrustedAgentContext
-    ) -> DurableTask:
-        response = await self._service.handle(request, context)
-        task = self._store.create_from_response(
-            request=request, context=context, response=response
-        )
+    async def create(self, request: AgentRequest, context: TrustedAgentContext) -> DurableTask:
+        if self._graph is None:
+            response = await self._service.handle(request, context)
+        else:
+            state = await self._graph.ainvoke(
+                {
+                    "task_id": str(context.task_id),
+                    "session_id": str(context.session_id),
+                    "trace_id": str(context.trace_id),
+                    "request_text": request.message,
+                    "request": request.model_dump(mode="json"),
+                    "context": {
+                        "authenticated_user_id": str(context.authenticated_user_id),
+                        "session_id": str(context.session_id),
+                        "task_id": str(context.task_id),
+                        "trace_id": str(context.trace_id),
+                    },
+                },
+                {"configurable": {"thread_id": str(context.task_id)}},
+            )
+            response = AgentResponse.model_validate(state["response"])
+        task = self._store.create_from_response(request=request, context=context, response=response)
         self._store.append_event(
             task_id=task.id,
             event_type="TASK_CREATED",
@@ -111,6 +137,21 @@ class DurableTaskManager:
             if existing is None:
                 raise KeyError(task_id)
             return existing
+        if self._graph is not None:
+            state = await self._graph.ainvoke(
+                Command(resume={"authorization_reference": authorization_reference}),
+                {"configurable": {"thread_id": str(task_id)}},
+            )
+            response = AgentResponse.model_validate(state["response"])
+            target_status = response_status_to_task(response.status)
+            return self._store.transition(
+                task_id=task.id,
+                user_id=user_id,
+                status=target_status,
+                result=response.result,
+                error_code=response.error.code if response.error else None,
+                public_message=response.message,
+            )
         draft_id = self._draft_id(task)
         context = ExecutionContext(
             authenticated_user_id=user_id,
@@ -165,9 +206,7 @@ class DurableTaskManager:
         )
 
     def cancel(self, *, task_id: UUID, user_id: UUID) -> DurableTask:
-        return self._store.transition(
-            task_id=task_id, user_id=user_id, status=TaskStatus.CANCELLED
-        )
+        return self._store.transition(task_id=task_id, user_id=user_id, status=TaskStatus.CANCELLED)
 
     def takeover(self, *, task_id: UUID, user_id: UUID) -> DurableTask:
         return self._store.transition(
@@ -186,7 +225,7 @@ def response_status_to_task(status: AgentResponseStatus) -> TaskStatus:
         AgentResponseStatus.COMPLETED: TaskStatus.COMPLETED,
         AgentResponseStatus.WAITING_APPROVAL: TaskStatus.WAITING_APPROVAL,
         AgentResponseStatus.FAILED: TaskStatus.FAILED,
-        AgentResponseStatus.NEEDS_CLARIFICATION: TaskStatus.FAILED,
+        AgentResponseStatus.NEEDS_CLARIFICATION: TaskStatus.NEEDS_CLARIFICATION,
     }[status]
 
 

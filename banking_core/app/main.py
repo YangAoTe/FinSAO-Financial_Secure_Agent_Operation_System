@@ -13,6 +13,7 @@ from banking_core.app.api.errors import (
     validation_error_handler,
 )
 from banking_core.app.api.health import router as health_router
+from banking_core.app.api.savings import router as savings_router
 from banking_core.app.api.security import router as security_router
 from banking_core.app.schemas.banking import ErrorResponse
 from banking_core.app.services.errors import BankingError
@@ -37,6 +38,7 @@ app.include_router(analytics_router)
 app.include_router(banking_router)
 app.include_router(cards_wealth_router)
 app.include_router(security_router)
+app.include_router(savings_router)
 app.add_exception_handler(BankingError, banking_error_handler)
 app.add_exception_handler(RequestValidationError, validation_error_handler)
 app.add_exception_handler(HTTPException, http_error_handler)

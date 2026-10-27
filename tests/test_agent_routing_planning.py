@@ -136,9 +136,7 @@ def test_plan_verifier_rejects_unknown_tool_cycle_and_inferred_arguments() -> No
             PlanStep(
                 step_id="balance",
                 purpose="balance",
-                tool_call=ToolCall(
-                    tool_name="get_balance", arguments={"account_id": str(uuid4())}
-                ),
+                tool_call=ToolCall(tool_name="get_balance", arguments={"account_id": str(uuid4())}),
                 argument_sources={
                     "account_id": ArgumentSource(
                         kind=ArgumentSourceKind.MODEL_INFERRED,
