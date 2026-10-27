@@ -113,7 +113,17 @@ def test_migration_and_seed_are_consistent_and_idempotent(migrated_database: str
         seed(session)
 
     with Session(engine) as session:
-        assert session.scalar(select(func.count()).select_from(UserModel)) == 3
+        assert session.scalar(select(func.count()).select_from(UserModel)) == 13
+        demo_recipients = list(
+            session.scalars(
+                select(AccountModel).where(
+                    AccountModel.account_number.like("299%")
+                    | AccountModel.account_number.like("390%")
+                )
+            )
+        )
+        assert len(demo_recipients) == 10
+        assert {item.name for item in demo_recipients} >= {"爸爸演示收款账户", "妈妈演示收款账户"}
         assert session.scalar(select(func.count()).select_from(TransactionModel)) == 15
         assert session.scalar(select(func.count()).select_from(LedgerEntryModel)) == 30
         for transaction_id in session.scalars(select(TransactionModel.id)):

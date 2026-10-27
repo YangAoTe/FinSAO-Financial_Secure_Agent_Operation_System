@@ -41,6 +41,22 @@ ModelT = TypeVar("ModelT", bound=Identified)
 SEED_NAMESPACE = uuid5(NAMESPACE_URL, "https://example.invalid/mock-banking-core/v1")
 UTC = UTC
 
+# Fictional destination accounts for demonstrating a first-time transfer.  They are
+# deliberately not pre-saved as Lin's beneficiaries: the user must enter the name and
+# account number once, after which the normal beneficiary flow can remember the match.
+DEMO_RECIPIENTS: tuple[tuple[str, str, str], ...] = (
+    ("father", "爸爸", "299000000001"),
+    ("mother", "妈妈", "390000000002"),
+    ("grandfather", "爷爷", "299000000003"),
+    ("grandmother", "奶奶", "390000000004"),
+    ("maternal-grandfather", "外公", "299000000005"),
+    ("maternal-grandmother", "外婆", "390000000006"),
+    ("older-brother", "哥哥", "299000000007"),
+    ("older-sister", "姐姐", "390000000008"),
+    ("friend-wang", "好友小王", "299000000009"),
+    ("friend-li", "好友小李", "390000000010"),
+)
+
 
 def stable_id(key: str) -> UUID:
     return uuid5(SEED_NAMESPACE, key)
@@ -117,6 +133,17 @@ def seed(session: Session) -> None:
             session,
             UserModel(id=stable_id(f"user:{key}"), display_name=name, email=email, risk_tier=tier),
         )
+
+    for key, name, _ in DEMO_RECIPIENTS:
+        add_once(
+            session,
+            UserModel(
+                id=stable_id(f"user:demo-recipient:{key}"),
+                display_name=name,
+                email=f"demo-recipient-{key}@example.invalid",
+                risk_tier=RiskTier.GREEN,
+            ),
+        )
     session.flush()
 
     system_account_id = stable_id("account:system:settlement")
@@ -153,6 +180,21 @@ def seed(session: Session) -> None:
                     is_system=False,
                 ),
             )
+
+    for key, name, account_number in DEMO_RECIPIENTS:
+        add_once(
+            session,
+            AccountModel(
+                id=stable_id(f"account:demo-recipient:{key}"),
+                user_id=stable_id(f"user:demo-recipient:{key}"),
+                account_number=account_number,
+                name=f"{name}演示收款账户",
+                currency=Currency.CNY,
+                status=AccountStatus.ACTIVE,
+                balance=Decimal("0.00"),
+                is_system=False,
+            ),
+        )
     session.flush()
 
     for user_key, _, _, _ in users:

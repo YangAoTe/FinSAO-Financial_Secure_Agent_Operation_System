@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from banking_core.app.domain.entities import Account, Budget, LedgerEntry, Transaction
 from banking_core.app.domain.enums import AccountStatus, Currency, TransactionStatus
 from banking_core.app.domain.money import Money
+from scripts.seed_demo_data import DEMO_RECIPIENTS
 
 
 def test_money_uses_decimal_and_bankers_rounding() -> None:
@@ -75,3 +76,12 @@ def test_ledger_entry_has_exactly_one_positive_side() -> None:
             currency=Currency.CNY,
             created_at=datetime.now(UTC),
         )
+
+
+def test_demo_recipient_directory_has_ten_unique_fictional_accounts() -> None:
+    names = [name for _, name, _ in DEMO_RECIPIENTS]
+    account_numbers = [account_number for _, _, account_number in DEMO_RECIPIENTS]
+    assert len(DEMO_RECIPIENTS) == 10
+    assert {"爸爸", "妈妈"} <= set(names)
+    assert len(set(account_numbers)) == 10
+    assert all(number.isdigit() and len(number) == 12 for number in account_numbers)

@@ -88,6 +88,7 @@ node server.mjs
 - 当前 Agent 完成请求时，前端展示后端 `TaskPlan`、工具步骤和 Banking Core 结果。
 - 当前 Agent 返回 `NEEDS_CLARIFICATION` 时，前端展示结构化确认表单。账户与联系人由 Core 的只读工具提供选项，模型推断值标为“待确认”。
 - 首次向新收款人转账时，在“转账”页填写姓名和完整收款账号；Core 验证并保存后，后续聊天转账可以按姓名或昵称自动匹配。完整账号不会通过聊天 Prompt 发送给 LLM。
+- 转账页的“查看 10 个虚构演示收款账号”可展开测试账号清单；若数据库早于该功能创建，请重新运行 `uv run python -m scripts.seed_demo_data`。
 - 密码、验证码、CVV 和完整卡号在浏览器与 Agent 请求契约两层阻止，不会进入外部 LLM；MFA 仍只提交给 Core 的独立验证接口。
 - `WAITING_APPROVAL` 或 `FAILED` 不会自动重放，防止重复草稿或重复写入；用户转到对应业务页面完成显式确认/MFA。
 - Agent 不可用时，业务页面仍可使用 Core，但助手不会在浏览器本地执行银行操作。
