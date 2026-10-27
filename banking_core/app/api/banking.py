@@ -14,6 +14,7 @@ from banking_core.app.api.dependencies import (
 from banking_core.app.schemas.banking import (
     AccountResponse,
     BalanceResponse,
+    BeneficiaryCreateRequest,
     BeneficiaryResolutionResponse,
     BeneficiaryResponse,
     CommitTransferRequest,
@@ -88,6 +89,21 @@ def list_beneficiaries(session: Db, actor_id: Actor) -> list[BeneficiaryResponse
         BeneficiaryResponse.model_validate(item)
         for item in BeneficiaryService(session).list_beneficiaries(actor_id)
     ]
+
+
+@router.post(
+    "/beneficiaries", response_model=BeneficiaryResponse, status_code=201, tags=["beneficiaries"]
+)
+def save_beneficiary(
+    request: BeneficiaryCreateRequest, session: Db, actor_id: Actor
+) -> BeneficiaryResponse:
+    item = BeneficiaryService(session).save_beneficiary(
+        actor_id,
+        name=request.name,
+        account_number=request.account_number,
+        nickname=request.nickname,
+    )
+    return BeneficiaryResponse.model_validate(item)
 
 
 @router.get(

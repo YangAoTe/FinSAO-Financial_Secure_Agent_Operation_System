@@ -106,16 +106,17 @@ class ClarificationGateway:
                     ]
                 ),
             )
-        if tool_name == "resolve_beneficiary":
+        if tool_name == "list_beneficiaries":
             class Beneficiaries(BaseModel):
-                matches: list[dict[str, Any]]
+                beneficiaries: list[dict[str, Any]]
 
             return ToolResult(
                 status=ToolResultStatus.SUCCESS,
                 data=Beneficiaries(
-                    matches=[
+                    beneficiaries=[
                         {
                             "destination_account_id": str(uuid4()),
+                            "destination_account_number": "DEMO0301000001",
                             "name": "Friend",
                             "nickname": "Friend",
                         }
@@ -265,14 +266,16 @@ async def test_online_langgraph_reconciles_unknown_mutation_outcome() -> None:
     assert gateway.calls == ["freeze_card", "freeze_card", "get_card_status"]
 
 
-def test_savings_api_and_tools_are_exposed() -> None:
+def test_savings_and_beneficiary_apis_and_tools_are_exposed() -> None:
     paths = TestClient(app).get("/openapi.json").json()["paths"]
     assert "/savings-pots" in paths
     assert "/savings-pots/{pot_id}/contributions" in paths
+    assert "post" in paths["/beneficiaries"]
     registry = ToolRegistry()
     register_default_tools(registry, Mock())
     names = {item["name"] for item in registry.list_allowed()}
     assert {"list_savings_pots", "create_savings_pot", "contribute_savings_pot"} <= names
+    assert "list_beneficiaries" in names
 
 
 @pytest.mark.asyncio
@@ -300,8 +303,12 @@ async def test_transfer_clarification_returns_account_and_contact_choices() -> N
     assert isinstance(clarification, dict)
     fields = {item["name"]: item for item in clarification["fields"]}
     assert fields["source_account_id"]["options"]
-    assert fields["destination_account_id"]["options"][0]["label"] == "Friend（Friend）"
-    assert gateway.calls == ["get_accounts", "resolve_beneficiary"]
+    assert (
+        fields["destination_account_id"]["options"][0]["label"]
+        == "Friend（Friend） · 尾号 0001"
+    )
+    assert fields["destination_account_id"]["value"] is not None
+    assert gateway.calls == ["get_accounts", "list_beneficiaries"]
 
 
 @pytest.mark.asyncio

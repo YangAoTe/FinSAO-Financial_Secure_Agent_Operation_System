@@ -7,7 +7,7 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from agent.capabilities import CapabilityBroker
-from agent.context import SlotState, SlotTracker
+from agent.context import FactSource, SlotFact, SlotState, SlotTracker
 from agent.contracts import (
     AgentError,
     AgentRequest,
@@ -224,7 +224,7 @@ class AgentService:
             "month_date": "预算月份",
             "limit_amount": "预算上限",
             "source_account_id": "付款账户",
-            "destination_account_id": "收款人",
+            "destination_account_id": "收款人（可输入姓名自动匹配）",
             "amount": "金额",
             "currency": "币种",
             "name": "储蓄目标名称",
@@ -239,7 +239,7 @@ class AgentService:
             "month_date": "month",
             "limit_amount": "amount",
             "source_account_id": "select",
-            "destination_account_id": "select",
+            "destination_account_id": "combobox",
             "account_id": "select",
             "target_date": "date",
             "amount": "amount",
@@ -280,28 +280,43 @@ class AgentService:
                     for item in payload.get("accounts", [])
                     if item.get("status") == "ACTIVE"
                 ]
-            query = slots.facts.get("beneficiary_query")
-            if query is not None:
-                beneficiaries = await self._gateway.execute(
-                    tool_name="resolve_beneficiary",
-                    arguments={"query": query.value},
-                    context=execution_context,
-                )
-                if (
-                    beneficiaries.status == ToolResultStatus.SUCCESS
-                    and beneficiaries.data is not None
-                ):
-                    payload = beneficiaries.data.model_dump(mode="json")
-                    options["destination_account_id"] = [
-                        ClarificationOption(
-                            value=str(item["destination_account_id"]),
-                            label=(
-                                f'{item["name"]}'
-                                + (f'（{item["nickname"]}）' if item.get("nickname") else "")
-                            ),
-                        )
-                        for item in payload.get("matches", [])
+            beneficiaries = await self._gateway.execute(
+                tool_name="list_beneficiaries",
+                arguments={},
+                context=execution_context,
+            )
+            if beneficiaries.status == ToolResultStatus.SUCCESS and beneficiaries.data is not None:
+                payload = beneficiaries.data.model_dump(mode="json")
+                items = payload.get("beneficiaries", [])
+                options["destination_account_id"] = [
+                    ClarificationOption(
+                        value=str(item["destination_account_id"]),
+                        label=(
+                            f'{item["name"]}'
+                            + (f'（{item["nickname"]}）' if item.get("nickname") else "")
+                            + f' · 尾号 {str(item["destination_account_number"])[-4:]}'
+                        ),
+                    )
+                    for item in items
+                ]
+                query = slots.facts.get("beneficiary_query")
+                if query is not None and "destination_account_id" not in slots.facts:
+                    normalized = str(query.value).strip().lower()
+                    matches = [
+                        item
+                        for item in items
+                        if str(item["name"]).lower() == normalized
+                        or str(item.get("nickname") or "").lower() == normalized
                     ]
+                    if len(matches) == 1:
+                        slots.facts["destination_account_id"] = SlotFact(
+                            "destination_account_id",
+                            str(matches[0]["destination_account_id"]),
+                            FactSource.TOOL_VERIFIED,
+                        )
+                        slots.missing = [
+                            name for name in slots.missing if name != "destination_account_id"
+                        ]
         field_names = list(dict.fromkeys([*intent.required_slots, *slots.facts.keys()]))
         field_names = [name for name in field_names if name != "beneficiary_query"]
         fields = [
@@ -321,7 +336,7 @@ class AgentService:
         inferred_labels = [field.label for field in fields if field.inferred]
         missing_labels = [labels.get(name, name.replace("_", " ")) for name in slots.missing]
         if intent.intent == Intent.TRANSFER:
-            message = "请选择付款账户和收款人；系统不会要求你复制内部 UUID。"
+            message = "请选择付款账户，并输入或选择以前保存的收款人；系统不会要求你复制内部 UUID。"
         elif inferred_labels:
             suffix = f"，并补充：{'、'.join(missing_labels)}" if missing_labels else ""
             message = f"我根据上下文推断了{'、'.join(inferred_labels)}{suffix}。请检查表单后确认。"

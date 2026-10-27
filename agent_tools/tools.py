@@ -74,11 +74,40 @@ class BeneficiaryItem(BaseModel):
     name: str
     nickname: str | None
     destination_account_id: UUID
+    destination_account_number: str
+
+
+class BeneficiariesOutput(BaseModel):
+    beneficiaries: list[BeneficiaryItem]
 
 
 class ResolveBeneficiaryOutput(BaseModel):
     status: str
     matches: list[BeneficiaryItem]
+
+
+class ListBeneficiariesTool(BaseBankingTool[EmptyInput, BeneficiariesOutput]):
+    name, description, action, risk_policy = (
+        "list_beneficiaries",
+        "List saved transfer beneficiaries",
+        "beneficiaries.list",
+        "GREEN",
+    )
+    input_model, output_model = EmptyInput, BeneficiariesOutput
+
+    def __init__(self, client: BankingHttpClient) -> None:
+        self.client = client
+
+    async def execute(
+        self, input_data: EmptyInput, context: ExecutionContext
+    ) -> BeneficiariesOutput:
+        del input_data
+        from pydantic import RootModel
+
+        response = await self.client.request(
+            "GET", "/beneficiaries", context, RootModel[list[BeneficiaryItem]]
+        )
+        return BeneficiariesOutput(beneficiaries=response.root)
 
 
 class CreateTransferDraftInput(BaseModel):
@@ -302,6 +331,7 @@ def register_default_tools(registry: ToolRegistry, client: BankingHttpClient) ->
         GetAccountsTool(client),
         GetBalanceTool(client),
         GetTransactionsTool(client),
+        ListBeneficiariesTool(client),
         ResolveBeneficiaryTool(client),
         CreateTransferDraftTool(client),
         GetTransferStatusTool(client),

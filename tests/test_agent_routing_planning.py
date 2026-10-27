@@ -190,7 +190,7 @@ async def test_missing_transfer_slots_use_only_read_only_discovery_tools() -> No
         _context(session_id),
     )
     assert response.status == AgentResponseStatus.NEEDS_CLARIFICATION
-    assert [call[0] for call in gateway.calls] == ["get_accounts", "resolve_beneficiary"]
+    assert [call[0] for call in gateway.calls] == ["get_accounts", "list_beneficiaries"]
     assert "UUID" in response.message
     assert "create_transfer_draft" not in {call[0] for call in gateway.calls}
 

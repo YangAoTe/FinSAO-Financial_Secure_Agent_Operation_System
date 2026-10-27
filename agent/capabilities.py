@@ -15,6 +15,7 @@ class CapabilityBroker:
         Intent.TRANSFER: {
             "accounts.list",
             "balance.query",
+            "beneficiaries.list",
             "beneficiaries.resolve",
             "transfer.draft",
             "transfer.status",

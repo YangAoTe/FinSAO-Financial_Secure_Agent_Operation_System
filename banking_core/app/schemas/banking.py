@@ -49,6 +49,13 @@ class BeneficiaryResponse(ApiModel):
     name: str
     nickname: str | None
     destination_account_id: UUID
+    destination_account_number: str
+
+
+class BeneficiaryCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    account_number: str = Field(min_length=1, max_length=34)
+    nickname: str | None = Field(default=None, max_length=80)
 
 
 class BeneficiaryResolutionResponse(ApiModel):
