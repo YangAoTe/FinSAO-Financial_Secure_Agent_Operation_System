@@ -1,5 +1,7 @@
 # FinSAO 前端（中文，AI 赛道）
 
+完整的 Core + Agent 联调、环境变量、启动和测试说明请阅读 [`../README.md`](../README.md)。本目录保留页面实现和零依赖代理服务。
+
 单文件前端 `index.html` + 零依赖本地服务 `server.mjs`。页面使用与后端一致的 JSON 规范（snake_case、十进制字符串金额、`X-Trace-Id`、`Idempotency-Key`）。
 
 ## 1. 启动后端（队友的仓库）
@@ -21,10 +23,10 @@ MOCK_MFA_CODE=123456   # 6 位数字，红色操作验证码
 
 ## 2. 启动前端
 ```
-node server.mjs            # 默认 http://localhost:5173，转发到 http://127.0.0.1:8000
-BACKEND_URL=http://host:8000 PORT=5173 node server.mjs
+node server.mjs            # 默认 http://127.0.0.1:5173
+CORE_BACKEND_URL=http://host:8000 AGENT_BACKEND_URL=http://host:8100 PORT=5173 node server.mjs
 ```
-页面右上角显示“已连接后端”即为真实模式；后端不可达时自动进入“演示模式”（内置模拟数据，验证码 123456）。右上角“JSON 日志”可查看每个请求/响应。
+页面顶部会分别显示 Core 与 Agent 连接状态；Core 不可达时进入演示模式，Agent 不可达时只回退助手路由，不影响 Core 业务页面。右上角“JSON 日志”可查看已脱敏的请求/响应。
 
 ## 3. 演示脚本（评委路径）
 1. 助手页：`查询余额，并给 Friend 转 800 元` → 黄色确认 → 回执（展示工具调用轨迹）。
@@ -33,7 +35,8 @@ BACKEND_URL=http://host:8000 PORT=5173 node server.mjs
 注意：转账场景假设当日全新数据库；重置演示数据用 `docker compose down -v`（仅限一次性演示库）。
 
 ## 已知限制
-- 聊天/语音：后端暂无 /chat、/voice；当前为页面内规则驱动的演示规划器，调用的是同一套 REST。语音按钮显示“未接入”。
+- 聊天优先连接当前 `/agent/requests`，未覆盖意图再使用页面内确定性工作流；语音仍未接入。
+- Jev 按要求保持未启用；它是可插拔路由，不是前后端连接的依赖。
 - 储蓄罐：后端无接口，未实现（不放置假数据）。
 - 种子数据只含 2026-01～03 的流水，总览默认统计 2026-03。
 

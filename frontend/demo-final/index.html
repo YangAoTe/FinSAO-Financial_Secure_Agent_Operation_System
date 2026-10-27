@@ -22,7 +22,7 @@ h2{margin:0 0 16px;font-size:30px;font-weight:800;letter-spacing:-.03em}h3{margi
 .btn,header button{border:1px solid #cfd9de;background:#fff;color:var(--ink);border-radius:99px;padding:10px 20px;font-size:14px;font-weight:700;cursor:pointer}
 .btn.p{background:var(--ink);color:#fff;border-color:var(--ink)}.btn.d{background:var(--r);color:#fff;border-color:var(--r)}.btn:disabled{opacity:.4;cursor:default}.btn.s{padding:6px 14px;font-size:13px}
 .pill{font-size:12px;font-weight:700;padding:2px 10px;border-radius:99px;white-space:nowrap}
-.GREEN,.COMPLETED,.ACTIVE,.SUCCESS,.CONFIRMED{background:var(--gb);color:var(--g)}.YELLOW,.PENDING_AUTHORIZATION,.FROZEN,.WAITING_APPROVAL,.PENDING{background:var(--yb);color:var(--y)}.RED,.LOST,.CANCELLED,.DENIED,.EXECUTION_ERROR,.VALIDATION_ERROR,.MFA_REQUIRED,.REJECTED{background:var(--rb);color:var(--r)}.INFO{background:var(--bb);color:var(--b)}
+.GREEN,.COMPLETED,.ACTIVE,.SUCCESS,.CONFIRMED{background:var(--gb);color:var(--g)}.YELLOW,.PENDING_AUTHORIZATION,.FROZEN,.WAITING_APPROVAL,.PENDING,.NEEDS_CLARIFICATION{background:var(--yb);color:var(--y)}.RED,.LOST,.CANCELLED,.DENIED,.EXECUTION_ERROR,.VALIDATION_ERROR,.MFA_REQUIRED,.REJECTED,.FAILED{background:var(--rb);color:var(--r)}.INFO{background:var(--bb);color:var(--b)}
 input,select{width:100%;padding:10px 12px;border:1px solid #cfd9de;border-radius:12px;background:#fff;color:var(--ink);font-size:15px}
 label{display:block;font-size:13px;color:var(--mut);margin:10px 0 4px}.f{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;align-items:end}
 .sk,.empty{color:var(--mut);padding:14px;text-align:center}.errb{color:var(--r);padding:10px 12px;background:var(--rb);border-radius:12px}
@@ -39,7 +39,7 @@ pre{white-space:pre-wrap;word-break:break-all;font:11px/1.4 ui-monospace,monospa
 .chips{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.chip{border:1px solid #cfd9de;background:#fff;border-radius:99px;padding:8px 14px;font-size:13px;cursor:pointer;font-weight:600}
 @media (max-width:859px){.shell{grid-template-rows:56px 1fr 58px}nav{grid-row:3;border:0;border-top:1px solid var(--line);padding:4px;justify-content:space-between}nav a{padding:6px 5px;font-size:11px;text-align:center}.mo{display:none}nav a.more{display:block}main{padding:18px 14px 140px}#chat{bottom:calc(66px + env(safe-area-inset-bottom,0px))}}
 </style></head><body>
-<div class="shell"><header><b>FinSAO</b><span class="pill INFO" id="mode">检测中…</span><span class="sp"></span><button id="devb">JSON 日志</button></header><nav id="nav"></nav><main id="main"></main></div>
+<div class="shell"><header><b>FinSAO</b><span class="pill INFO" id="mode">Core 检测中…</span><span class="pill INFO" id="agentmode">Agent 检测中…</span><span class="sp"></span><button id="devb">JSON 日志</button></header><nav id="nav"></nav><main id="main"></main></div>
 <div id="chat"><input id="ci" placeholder="问 FinSAO：查询余额，并给 Friend 转 800 元" aria-label="助手输入"><button class="btn" id="mic" title="语音">🎤</button><button class="btn p" id="cs">发送</button></div>
 <div class="ov" id="ov"><div class="sheet" id="sh"></div></div>
 <div id="dev"><b>请求 / 响应（JSON 传输规范）</b><div id="log"></div></div>
@@ -47,7 +47,7 @@ pre{white-space:pre-wrap;word-break:break-all;font:11px/1.4 ui-monospace,monospa
 const $=s=>document.querySelector(s),sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const CUR={CNY:'¥',USD:'$',EUR:'€'},CAT={HOUSEHOLD:'家居',GROCERIES:'日用杂货',TRANSPORT:'交通',ENTERTAINMENT:'娱乐',DINING:'餐饮',UNKNOWN:'未分类',OPENING_BALANCE:'期初余额',INTERNAL_TRANSFER:'内部转账'};
-const ST={ACTIVE:'有效',FROZEN:'冻结',LOST:'挂失',CANCELLED:'已取消',COMPLETED:'已完成',PENDING_AUTHORIZATION:'待授权',PENDING:'待处理',CONFIRMED:'已确认',REJECTED:'已拒绝',GREEN:'绿·读取',YELLOW:'黄·需确认',RED:'红·需验证码',SUCCESS:'SUCCESS',WAITING_APPROVAL:'WAITING_APPROVAL',MFA_REQUIRED:'MFA_REQUIRED',DENIED:'DENIED',VALIDATION_ERROR:'VALIDATION_ERROR',EXECUTION_ERROR:'EXECUTION_ERROR'};
+const ST={ACTIVE:'有效',FROZEN:'冻结',LOST:'挂失',CANCELLED:'已取消',COMPLETED:'已完成',PENDING_AUTHORIZATION:'待授权',PENDING:'待处理',CONFIRMED:'已确认',REJECTED:'已拒绝',GREEN:'绿·读取',YELLOW:'黄·需确认',RED:'红·需验证码',SUCCESS:'SUCCESS',WAITING_APPROVAL:'WAITING_APPROVAL',NEEDS_CLARIFICATION:'需要补充信息',FAILED:'FAILED',MFA_REQUIRED:'MFA_REQUIRED',DENIED:'DENIED',VALIDATION_ERROR:'VALIDATION_ERROR',EXECUTION_ERROR:'EXECUTION_ERROR'};
 const PTY={MONEY_MARKET_FUND:'货币基金',BOND_FUND:'债券基金',GOVERNMENT_BOND:'国债',FIXED_INCOME:'固定收益'};
 const EM={INSUFFICIENT_FUNDS:'余额不足',AUTHORIZATION_REQUIRED:'授权无效、已过期或验证码错误',FORBIDDEN:'无权访问，或验证失败过多已被安全锁定',NOT_FOUND:'资源不存在',CONFLICT:'状态冲突，请刷新后重试',VALIDATION_ERROR:'请求校验失败，请检查输入',INTERNAL_ERROR:'服务异常，请稍后重试',HTTP_ERROR:'身份不可用：请检查后端 DEVELOPMENT_USER_ID 与 APP_ENV=development',BANKING_ERROR:'业务操作无效',NETWORK:'网络超时，结果未知'};
 const emsg=e=>EM[e.code]||e.message||'未知错误';
@@ -56,7 +56,7 @@ const cents=s=>{const p=String(s).split('.');return BigInt(p[0])*100n+BigInt(((p
 const cs=n=>{if(n<0n)n=0n;return (n/100n)+'.'+String(n%100n).padStart(2,'0')};
 const AMT=/^\d{1,16}(\.\d{1,2})?$/,pill=v=>`<span class="pill ${v}">${esc(ST[v]||v)}</span>`,uid=()=>crypto.randomUUID();
 const fdate=s=>s?new Date(s).toLocaleDateString('zh-CN'):'—';
-let REAL=false;const LOG=[],ts=()=>new Date().toLocaleTimeString('zh-CN'),scrub=o=>JSON.parse(JSON.stringify(o??null,(k,v)=>k=='authorization_ref'?'[已隐藏]':v));
+let REAL=false,AGENT_REAL=false;const LOG=[],ts=()=>new Date().toLocaleTimeString('zh-CN'),scrub=o=>JSON.parse(JSON.stringify(o??null,(k,v)=>['authorization_ref','authorization_reference','mfa_code'].includes(k)||(k=='code'&&/^\d{6}$/.test(String(v)))?'[已隐藏]':v));
 /* ===== API：严格遵循 JSON 传输规范 ===== */
 async function api(method,path,o={}){
  const q=o.query?'?'+new URLSearchParams(Object.entries(o.query).filter(([,v])=>v!==''&&v!=null)):'';
@@ -64,11 +64,16 @@ async function api(method,path,o={}){
  let st,data;
  if(!REAL){await sleep(80);try{[st,data]=mock(method,path,o.query||{},o.body,h)}catch(e){st=e.status||500;data={code:e.code||'INTERNAL_ERROR',message:e.message}}}
  else{const ac=new AbortController(),tm=setTimeout(()=>ac.abort(),12000);
-  try{const r=await fetch(path+q,{method,headers:h,body:o.body?JSON.stringify(o.body):undefined,signal:ac.signal});st=r.status;data=await r.json().catch(()=>null)}
+  try{const r=await fetch('/api/core'+path+q,{method,headers:h,body:o.body?JSON.stringify(o.body):undefined,signal:ac.signal});st=r.status;data=await r.json().catch(()=>null)}
   catch{const e=new Error('network');e.code='NETWORK';e.status=0;throw e}finally{clearTimeout(tm)}}
  LOG.unshift({m:method,p:path+q,h,b:scrub(o.body),s:st,r:scrub(data)});LOG.length=Math.min(LOG.length,40);$('#log').innerHTML=LOG.map(l=>`<details><summary><b>${l.m}</b> ${esc(l.p)} → ${l.s}</summary><pre>${esc('请求头 '+JSON.stringify(l.h,null,1)+'\n请求体 '+JSON.stringify(l.b??null,null,1)+'\n响应 '+JSON.stringify(l.r,null,1))}</pre></details>`).join('');
  if(st>=400){const e=new Error(data&&data.message);e.status=st;e.code=data&&data.code;throw e}
  return data}
+async function agentApi(path,body){const h={Accept:'application/json','Content-Type':'application/json','X-Trace-Id':uid()},ac=new AbortController(),tm=setTimeout(()=>ac.abort(),15000);let st,data;
+ try{const r=await fetch('/api/agent'+path,{method:'POST',headers:h,body:JSON.stringify(body),signal:ac.signal});st=r.status;data=await r.json().catch(()=>null)}
+ catch{const e=new Error('agent network');e.code='AGENT_UNAVAILABLE';e.status=0;throw e}finally{clearTimeout(tm)}
+ LOG.unshift({m:'POST',p:'/api/agent'+path,h,b:scrub(body),s:st,r:scrub(data)});LOG.length=Math.min(LOG.length,40);$('#log').innerHTML=LOG.map(l=>`<details><summary><b>${l.m}</b> ${esc(l.p)} → ${l.s}</summary><pre>${esc('请求头 '+JSON.stringify(l.h,null,1)+'\n请求体 '+JSON.stringify(l.b??null,null,1)+'\n响应 '+JSON.stringify(l.r,null,1))}</pre></details>`).join('');
+ if(st>=400){const detail=data&&data.detail,e=new Error(detail&&detail.message||data&&data.message||'Agent 请求失败');e.status=st;e.code=detail&&detail.code||data&&data.code||'AGENT_ERROR';throw e}return data}
 /* ===== 内置模拟后端：镜像真实后端的种子数据与规则（仅无后端时使用）===== */
 const U=n=>'00000000-0000-4000-8000-'+String(n).padStart(12,'0');
 const D={acc:[{id:U(1),account_number:'DEMO0101000001',name:'Checking',currency:'CNY',status:'ACTIVE'},{id:U(2),account_number:'DEMO0102000001',name:'Savings',currency:'CNY',status:'ACTIVE'}],
@@ -273,9 +278,10 @@ pages.pots=()=>{main(`<h2>储蓄罐</h2><div class="card" style="background:var(
  $('#pa').onclick=()=>{const n=$('#pn').value.trim(),t=$('#pt').value.trim();if(!n||!AMT.test(t)||cents(t)<=0n){$('#pe').textContent='请填写名称和有效目标金额';return}PTS.push({id:'p'+Date.now(),name:n,target:cs(cents(t)),saved:'0.00',date:$('#pd').value||'未设置',hist:[]});pages.pots()};
  $('#pl').onclick=e=>{const b=e.target.closest('[data-p]');if(!b)return;const p=PTS.find(x=>x.id==b.dataset.p),v=$(`[data-pi="${p.id}"]`).value.trim();if(!AMT.test(v)||cents(v)<=0n)return;p.saved=cs(cents(p.saved)+cents(v));p.hist.push([new Date().toISOString().slice(0,10),cs(cents(v))]);drawPots()};drawPots()};
 function drawPots(){$('#pl').innerHTML=PTS.map(p=>{const pc=Math.min(100,Number(cents(p.saved)*100n/cents(p.target)));return `<div class="card"><div style="display:flex;justify-content:space-between"><b>${esc(p.name)} <span class="pill INFO">预览</span></b><span class="mut">目标日期 ${esc(p.date)}</span></div><div class="big">${money(p.saved)}<span class="mut"> / ${money(p.target)}</span></div><div class="bar"><i style="width:${pc}%"></i></div><div class="mut">已完成 ${pc}%</div><div style="display:flex;gap:8px;margin-top:10px"><input data-pi="${p.id}" inputmode="decimal" placeholder="存入金额（虚拟）"><button class="btn s" data-p="${p.id}">存入（预览）</button></div>${p.hist.slice().reverse().map(h=>`<div class="row"><span class="mut">${h[0]}</span><span>+${money(h[1])}</span></div>`).join('')}</div>`}).join('')}
-/* ===== AI 助手：工具调用轨迹（演示规划器，调用与后端相同的 API）===== */
+/* ===== AI 助手：后端 Agent 优先，未覆盖意图由确定性 Core 工作流处理 ===== */
+const AGENT_SESSION=sessionStorage.getItem('finsao-agent-session')||uid();sessionStorage.setItem('finsao-agent-session',AGENT_SESSION);
 const AI={init:false,abort:false,fails:0,blocked:0,locked:false},AUD=[];
-pages.ai=()=>{main(`<h2>AI 助手</h2><div class="mut">演示规划器（规则驱动）。每一步展示工具名、风险等级与结果状态；<b>授权凭据由可信会话注入，不会出现在工具参数中</b>，聊天发起的操作同样走审批组件。后端接入 LangGraph 后可替换规划器，轨迹界面不变。</div><div class="chips" id="ex"></div><button class="btn s" onclick="showAudit()">决策链路 / 审计</button><div id="msgs"></div><div style="display:flex;gap:8px;margin-top:14px;position:sticky;bottom:12px"><input id="ai-in" placeholder="例如：查询余额，并给 Friend 转 800 元"><button class="btn p" id="ai-go">发送</button></div>`);
+pages.ai=()=>{main(`<h2>AI 助手</h2><div class="mut">请求优先进入当前后端 Agent；其尚未覆盖的消费、预算、订阅、卡片和理财意图回退到确定性 Core 工作流。每一步展示工具名、风险等级与结果状态；<b>授权凭据由可信会话注入，不会出现在 Agent 参数中</b>。Jev 当前未启用。</div><div class="chips" id="ex"></div><button class="btn s" onclick="showAudit()">决策链路 / 审计</button><div id="msgs"></div><div style="display:flex;gap:8px;margin-top:14px;position:sticky;bottom:12px"><input id="ai-in" placeholder="例如：查询余额，并给 Friend 转 800 元"><button class="btn p" id="ai-go">发送</button></div>`);
  ['查询余额，并给 Friend 转 800 元','本月消费怎么样','查看订阅','冻结我的银行卡','有哪些理财产品','给 Friend 转 1500 元'].forEach(t=>{const c=document.createElement('button');c.className='chip';c.textContent=t;c.onclick=()=>send(t);$('#ex').appendChild(c)});
  $('#ai-go').onclick=()=>{const v=$('#ai-in').value.trim();$('#ai-in').value='';if(v)send(v)};$('#ai-in').onkeydown=e=>{if(e.key=='Enter')$('#ai-go').click()};
  if(AI.html)$('#msgs').innerHTML=AI.html;if(!AI.html)bot('你好，我可以查询余额与流水、转账、看消费与预算、管理订阅和银行卡、浏览理财产品。资金类操作都会先让你确认。')};
@@ -290,10 +296,14 @@ function lockAI(why){AI.locked=true;AUD.push([ts(),'CIRCUIT_BREAKER','RED','DENI
 function dag(nodes){$('#msgs').insertAdjacentHTML('beforeend',`<div class="tr"><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><b>任务计划（DAG）</b>${nodes.map((n,i)=>`${i?'<span class="mut">→</span>':''}<span class="pill INFO" data-n="${n}">○ ${n}</span>`).join('')}<button class="btn s" onclick="AI.abort=true">⏹ 中断</button></div></div>`);keep()}
 function mark(n,s){const el=[...document.querySelectorAll(`[data-n="${n}"]`)].pop();if(!el)return;const m={run:['◐','WAITING_APPROVAL'],ok:['✓','SUCCESS'],err:['✗','DENIED']}[s];el.className='pill '+m[1];el.textContent=m[0]+' '+n;AI.html=$('#msgs').innerHTML}
 function showAudit(){modal(`<h3>决策链路 / 审计（本会话）</h3><div class="mut">客户端记录的 Agent 决策与工具调用（授权凭据已隐藏）；后端 audit_events 表另行持久化关键操作（暂无查询接口）。</div>`+(AUD.length?AUD.map(a=>`<div class="row" style="display:block"><span class="mut k">${a[0]}</span> <code>${esc(a[1])}</code> ${pill(a[2])} ${pill(a[3])}<div class="k mut">${esc(a[4])}</div></div>`).join(''):'<div class="empty">暂无记录</div>')+'<br><button class="btn p" id="okb">关闭</button>');$('#okb').onclick=unmodal}
+function agentResult(r){const x=r.result;if(!x)return esc(r.message);if(Array.isArray(x.accounts))return x.accounts.map(a=>`${esc(a.name)} · ${esc(a.account_number)} ${pill(a.status)}`).join('<br>');if(x.balance!=null)return `账户余额 <b>${money(x.balance,x.currency)}</b>`;if(Array.isArray(x.items))return x.items.map(v=>`${esc(v.description)} · ${money(v.amount,v.currency)}`).join('<br>')||'暂无流水';return `${esc(r.message)}<pre>${esc(JSON.stringify(x,null,2))}</pre>`}
+async function tryBackendAgent(t){if(!AGENT_REAL)return false;let r;try{r=await agentApi('/requests',{schema_version:'v1',session_id:AGENT_SESSION,message:t,locale:'zh-CN'})}catch(e){AGENT_REAL=false;$('#agentmode').textContent='Agent 不可用 · 已回退';$('#agentmode').className='pill YELLOW';AUD.push([ts(),'AGENT_UNAVAILABLE','YELLOW','EXECUTION_ERROR',e.code||e.message]);return false}
+ const steps=r.plan&&r.plan.steps||[];if(steps.length)dag(steps.map(s=>s.step_id));steps.forEach(s=>{mark(s.step_id,r.status=='FAILED'?'err':'ok');trace(s.tool_call&&s.tool_call.tool_name||s.step_id,'INFO',s.tool_call&&s.tool_call.arguments||{},r.status,{purpose:s.purpose})});
+ AUD.push([ts(),'BACKEND_AGENT','INFO',r.status,`${r.request_id} · ${r.message}`]);if(r.status=='COMPLETED'){bot(agentResult(r));return true}if(r.status=='WAITING_APPROVAL'){bot(`${esc(r.message)}<br><span class="mut">请在对应业务页面完成审批；Agent 不接收客户端伪造的授权字段。</span>`);return true}if(r.status=='FAILED'){bot(`<span style="color:var(--r)">${esc(r.message)}</span>`);return true}return false}
 async function send(t){if(AI.locked){bot('助手已因异常熔断锁定。');return}me(t);
  if(INJ.test(t)){AI.blocked++;AUD.push([ts(),'INJECTION_BLOCKED','RED','DENIED',t.slice(0,60)]);bot('⚠️ 该请求试图绕过权限或验证规则，已拒绝。权限等级由后端策略决定，不受对话内容影响。');if(AI.blocked>=3)lockAI('连续 3 次可疑指令');return}
  AI.abort=false;try{await plan(t)}catch(e){if(e.code=='INTERRUPTED')bot('⏹ 任务已中断。已完成的步骤不会回滚；未提交的转账草稿将在 15 分钟后过期（后端暂无取消接口）。');else bot(`<span style="color:var(--r)">${esc(emsg(e))}</span>`)}}
-async function plan(t){const amt=(t.match(/(\d+(?:\.\d{1,2})?)\s*(?:元|块|rmb|cny)?/i)||[])[1];let did=0;const nodes=[];if(/余额|账户/.test(t))nodes.push('get_accounts','get_balance');if(/转/.test(t)&&amt)nodes.push('resolve_beneficiary','create_transfer_draft','人工审批','commit_transfer');if(/消费|支出|花/.test(t))nodes.push('analyze_spending');if(/预算/.test(t))nodes.push('list_budgets','get_budget_status');if(/订阅/.test(t))nodes.push('list_subscriptions');if(/冻结|解冻|挂失/.test(t))nodes.push('list_cards','人工审批',/解冻/.test(t)?'unfreeze_card':/挂失/.test(t)?'report_card_lost':'freeze_card');if(/理财|基金|产品/.test(t))nodes.push('list_wealth_products');if(nodes.length)dag(nodes);
+async function plan(t){if(await tryBackendAgent(t))return;const amt=(t.match(/(\d+(?:\.\d{1,2})?)\s*(?:元|块|rmb|cny)?/i)||[])[1];let did=0;const nodes=[];if(/余额|账户/.test(t))nodes.push('get_accounts','get_balance');if(/转/.test(t)&&amt)nodes.push('resolve_beneficiary','create_transfer_draft','人工审批','commit_transfer');if(/消费|支出|花/.test(t))nodes.push('analyze_spending');if(/预算/.test(t))nodes.push('list_budgets','get_budget_status');if(/订阅/.test(t))nodes.push('list_subscriptions');if(/冻结|解冻|挂失/.test(t))nodes.push('list_cards','人工审批',/解冻/.test(t)?'unfreeze_card':/挂失/.test(t)?'report_card_lost':'freeze_card');if(/理财|基金|产品/.test(t))nodes.push('list_wealth_products');if(nodes.length)dag(nodes);
  if(/余额|账户/.test(t)){did=1;const a=await tool('get_accounts','GREEN',{},()=>api('GET','/accounts'));const rows=[];for(const x of a){const b=await tool('get_balance','GREEN',{account_id:x.id},()=>api('GET','/accounts/'+x.id+'/balance'));rows.push(`${esc(x.name)}：<b>${money(b.balance,b.currency)}</b>`)}bot(rows.join('<br>'))}
  if(/转/.test(t)&&amt){did=1;const nm=(t.split('给')[1]||'').replace(/转.*|\d.*|[，。,\s]+$/g,'').trim();if(!nm){bot('请告诉我收款人，例如：给 Friend 转 800 元。');return}
   const r=await tool('resolve_beneficiary','GREEN',{query:nm},()=>api('GET','/beneficiaries/resolve',{query:{query:nm}}));
@@ -312,7 +322,9 @@ async function plan(t){const amt=(t.match(/(\d+(?:\.\d{1,2})?)\s*(?:元|块|rmb|
   await tool(cfg[0],cfg[1],{resource_id:k.id,authorization:'由可信会话注入（不暴露给模型）'},()=>api('POST','/cards/'+k.id+cfg[3],{body:{authorization_ref:ref}}));bot(`✅ 已${cfg[4]}银行卡 •••• ${esc(k.last_four)}`)}
  if(/理财|基金|产品/.test(t)){did=1;const p=await tool('list_wealth_products','GREEN',{},()=>api('GET','/wealth/products'));bot(p.map(x=>`${esc(x.name)}（${ST[x.risk_tier]}，起购 ${money(x.minimum_amount)}）`).join('<br>')+'<br><span class="mut">申购需先完成风险测评，并通过验证码确认。</span>')}
  if(!did)bot('我暂时只能处理：余额、转账、消费、预算、订阅、银行卡、理财产品。试试上方的示例。')}
-/* ===== 启动：自动检测后端 ===== */
-(async()=>{try{const ac=new AbortController();setTimeout(()=>ac.abort(),1500);const r=await fetch('/health',{signal:ac.signal});const j=await r.json();REAL=r.ok&&j&&j.status=='ok'}catch{REAL=false}
- $('#mode').textContent=REAL?'已连接后端':'演示模式（内置模拟数据）';$('#mode').className='pill '+(REAL?'GREEN':'INFO');go('home')})();
+/* ===== 启动：分别检测 Banking Core 与 Agent ===== */
+(async()=>{const probe=async path=>{try{const ac=new AbortController(),tm=setTimeout(()=>ac.abort(),1800),r=await fetch(path,{signal:ac.signal});clearTimeout(tm);return r.ok}catch{return false}};
+ REAL=await probe('/api/core/health');AGENT_REAL=await probe('/api/agent/openapi.json');
+ $('#mode').textContent=REAL?'Core 已连接':'Core 演示模式';$('#mode').className='pill '+(REAL?'GREEN':'INFO');
+ $('#agentmode').textContent=AGENT_REAL?'Agent 已连接':'Agent 未连接';$('#agentmode').className='pill '+(AGENT_REAL?'GREEN':'YELLOW');go('home')})();
 </script></body></html>
