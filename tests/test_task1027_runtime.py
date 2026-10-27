@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from agent.capabilities import CapabilityBroker
 from agent.context import SlotTracker
@@ -54,6 +54,12 @@ class CapturingGateway:
             status=ToolResultStatus.SUCCESS,
             data=FixtureOutput(value="verified-core-result"),
         )
+
+
+class FailIfRouted:
+    def route(self, text: str, *, conversation: list[Any] | None = None) -> IntentResult:
+        del text, conversation
+        raise AssertionError("a confirmed form must not be sent through the router or LLM")
 
 
 class ReconciliationGateway:
@@ -309,6 +315,74 @@ async def test_transfer_clarification_returns_account_and_contact_choices() -> N
     )
     assert fields["destination_account_id"]["value"] is not None
     assert gateway.calls == ["get_accounts", "list_beneficiaries"]
+
+
+@pytest.mark.asyncio
+async def test_confirmed_transfer_form_bypasses_llm_and_executes_once() -> None:
+    registry = ToolRegistry()
+    register_default_tools(registry, Mock())
+    gateway = CapturingGateway()
+    service = AgentService(
+        router=FailIfRouted(),
+        slots=SlotTracker(),
+        planner=BaselinePlanner(),
+        verifier=PlanVerifier(registry),
+        capabilities=CapabilityBroker(registry),
+        gateway=gateway,
+    )
+    source, destination, session_id = uuid4(), uuid4(), uuid4()
+    response = await service.handle(
+        AgentRequest(
+            session_id=session_id,
+            message=f"确认从 {source} 向 {destination} 转账 500.00 元",
+            confirmation={
+                "intent": "TRANSFER",
+                "fields": {
+                    "source_account_id": str(source),
+                    "destination_account_id": str(destination),
+                    "amount": "500.00",
+                    "currency": "CNY",
+                },
+            },
+        ),
+        _trusted_context(session_id),
+    )
+    assert response.status == AgentResponseStatus.COMPLETED
+    assert gateway.calls == ["create_transfer_draft"]
+    assert response.plan is not None
+    call = response.plan.steps[0].tool_call
+    assert call is not None
+    assert call.arguments["amount"] == "500.00"
+    assert response.plan.steps[0].argument_sources["amount"].kind.value == "USER_EXPLICIT"
+
+
+def test_confirmation_rejects_missing_or_trusted_fields() -> None:
+    source = str(uuid4())
+    destination = str(uuid4())
+    with pytest.raises(ValidationError, match="missing confirmation fields"):
+        AgentRequest(
+            session_id=uuid4(),
+            message="确认转账",
+            confirmation={
+                "intent": "TRANSFER",
+                "fields": {"source_account_id": source},
+            },
+        )
+    with pytest.raises(ValidationError, match="trusted fields are forbidden"):
+        AgentRequest(
+            session_id=uuid4(),
+            message="确认转账",
+            confirmation={
+                "intent": "TRANSFER",
+                "fields": {
+                    "source_account_id": source,
+                    "destination_account_id": destination,
+                    "amount": "500.00",
+                    "currency": "CNY",
+                    "user_id": str(uuid4()),
+                },
+            },
+        )
 
 
 @pytest.mark.asyncio

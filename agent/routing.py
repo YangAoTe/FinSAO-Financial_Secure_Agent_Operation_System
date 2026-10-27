@@ -42,6 +42,29 @@ class Intent(StrEnum):
     UNKNOWN = "UNKNOWN"
 
 
+REQUIRED_SLOTS_BY_INTENT: dict[Intent, tuple[str, ...]] = {
+    Intent.GET_BALANCE: ("account_id",),
+    Intent.GET_TRANSACTIONS: ("account_id",),
+    Intent.TRANSFER: ("source_account_id", "destination_account_id", "amount", "currency"),
+    Intent.ANALYZE_SPENDING: ("year", "month"),
+    Intent.GET_BUDGET_STATUS: ("resource_id",),
+    Intent.CREATE_BUDGET: ("category", "month_date", "limit_amount", "currency"),
+    Intent.UPDATE_BUDGET: ("budget_id", "limit_amount"),
+    Intent.CANCEL_SUBSCRIPTION: ("resource_id",),
+    Intent.GET_CARD: ("resource_id",),
+    Intent.UPDATE_CARD_LIMIT: ("card_id", "spending_limit"),
+    Intent.FREEZE_CARD: ("resource_id",),
+    Intent.UNFREEZE_CARD: ("resource_id",),
+    Intent.REPORT_CARD_LOST: ("resource_id",),
+    Intent.COMPARE_WEALTH_PRODUCTS: ("product_ids",),
+    Intent.ASSESS_RISK_PROFILE: ("answers",),
+    Intent.SUBSCRIBE_WEALTH: ("account_id", "product_id", "amount"),
+    Intent.REDEEM_WEALTH: ("account_id", "product_id", "amount"),
+    Intent.CREATE_SAVINGS_POT: ("name", "target_amount", "target_date", "currency"),
+    Intent.CONTRIBUTE_SAVINGS_POT: ("pot_id", "amount"),
+}
+
+
 class Route(StrEnum):
     RULE_DIRECT = "RULE_DIRECT"
     PLANNER = "PLANNER"

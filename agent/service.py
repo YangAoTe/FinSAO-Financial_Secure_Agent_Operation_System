@@ -23,7 +23,7 @@ from agent.contracts import (
 )
 from agent.planning import PlanValidationError, PlanVerifier
 from agent.responses import SafeResponseGenerator
-from agent.routing import Intent, IntentResult, Route
+from agent.routing import REQUIRED_SLOTS_BY_INTENT, Intent, IntentResult, Route
 from agent_tools.contracts import ExecutionContext, ToolResult, ToolResultStatus
 
 
@@ -72,30 +72,42 @@ class AgentService:
         self._responses = responses or SafeResponseGenerator()
 
     async def handle(self, request: AgentRequest, context: TrustedAgentContext) -> AgentResponse:
-        contextual_text, active_conversation = self._active_context(request)
-        routed = self._router.route(request.message, conversation=active_conversation)
-        intent = await routed if isinstance(routed, Awaitable) else routed
-        if intent.intent == Intent.GENERAL_CHAT:
-            return AgentResponse(
-                request_id=request.request_id,
-                session_id=request.session_id,
-                task_id=context.task_id,
-                status=AgentResponseStatus.COMPLETED,
-                message=intent.reply or "你好，我可以帮助你处理银行账户与财务任务。",
+        if request.confirmation is not None:
+            confirmed_intent = request.confirmation.intent
+            intent = IntentResult(
+                intent=confirmed_intent,
+                complexity=3,
+                confidence=1.0,
+                route=Route.PLANNER,
+                reason="user-confirmed clarification form",
+                required_slots=list(REQUIRED_SLOTS_BY_INTENT[confirmed_intent]),
             )
-        if intent.route == Route.SAFE_FALLBACK:
-            return AgentResponse(
-                request_id=request.request_id,
-                session_id=request.session_id,
-                task_id=context.task_id,
-                status=AgentResponseStatus.NEEDS_CLARIFICATION,
-                message=(
-                    intent.reply
-                    or "当前请求无法安全识别，请明确说明账户、消费、预算、订阅、银行卡、"
-                    "理财、储蓄罐或转账需求。"
-                ),
-            )
-        slot_state = self._slots.extract(contextual_text, intent)
+            slot_state = self._slots.from_confirmation(request.confirmation.fields, intent)
+        else:
+            contextual_text, active_conversation = self._active_context(request)
+            routed = self._router.route(request.message, conversation=active_conversation)
+            intent = await routed if isinstance(routed, Awaitable) else routed
+            if intent.intent == Intent.GENERAL_CHAT:
+                return AgentResponse(
+                    request_id=request.request_id,
+                    session_id=request.session_id,
+                    task_id=context.task_id,
+                    status=AgentResponseStatus.COMPLETED,
+                    message=intent.reply or "你好，我可以帮助你处理银行账户与财务任务。",
+                )
+            if intent.route == Route.SAFE_FALLBACK:
+                return AgentResponse(
+                    request_id=request.request_id,
+                    session_id=request.session_id,
+                    task_id=context.task_id,
+                    status=AgentResponseStatus.NEEDS_CLARIFICATION,
+                    message=(
+                        intent.reply
+                        or "当前请求无法安全识别，请明确说明账户、消费、预算、订阅、银行卡、"
+                        "理财、储蓄罐或转账需求。"
+                    ),
+                )
+            slot_state = self._slots.extract(contextual_text, intent)
         inferred = any(fact.source.value == "MODEL_INFERRED" for fact in slot_state.facts.values())
         if slot_state.missing or inferred:
             return await self._clarification_response(request, context, intent, slot_state)

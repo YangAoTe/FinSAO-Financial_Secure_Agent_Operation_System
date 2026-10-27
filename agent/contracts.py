@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 from agent.privacy import SensitiveDataGuard
+from agent.routing import REQUIRED_SLOTS_BY_INTENT, Intent
 
 
 class StrictContract(BaseModel):
@@ -47,12 +48,53 @@ class ConversationMessage(StrictContract):
         return SensitiveDataGuard.ensure_safe(value)
 
 
+class ClarificationConfirmation(StrictContract):
+    """User-confirmed form values; this is data, never a new model prompt."""
+
+    intent: Intent
+    fields: dict[str, JsonValue] = Field(min_length=1, max_length=20)
+
+    @model_validator(mode="after")
+    def validate_fields(self) -> ClarificationConfirmation:
+        required = set(REQUIRED_SLOTS_BY_INTENT.get(self.intent, ()))
+        if not required:
+            raise ValueError("intent does not accept a clarification confirmation")
+        optional = {"include_balance"} if self.intent == Intent.TRANSFER else set()
+        present = set(self.fields)
+        forbidden = {
+            "user_id",
+            "authenticated_user_id",
+            "authorization_ref",
+            "authorization_reference",
+            "mfa_code",
+            "risk_tier",
+            "approved",
+            "idempotency_key",
+        }
+        if forbidden.intersection(present):
+            raise ValueError("trusted fields are forbidden in confirmation data")
+        if unexpected := present - required - optional:
+            raise ValueError(f"unexpected confirmation fields: {sorted(unexpected)}")
+        missing = {
+            name
+            for name in required
+            if name not in self.fields or self.fields[name] in (None, "", [])
+        }
+        if missing:
+            raise ValueError(f"missing confirmation fields: {sorted(missing)}")
+        for value in self.fields.values():
+            if isinstance(value, str):
+                SensitiveDataGuard.ensure_safe(value)
+        return self
+
+
 class AgentRequest(StrictContract):
     schema_version: Literal["v1"] = "v1"
     request_id: UUID = Field(default_factory=uuid4)
     session_id: UUID
     message: Annotated[str, Field(min_length=1, max_length=20_000)]
     conversation: list[ConversationMessage] = Field(default_factory=list, max_length=100)
+    confirmation: ClarificationConfirmation | None = None
     locale: Literal["zh-CN", "en-US"] = "zh-CN"
 
     @field_validator("message")

@@ -64,7 +64,7 @@ Node 代理分别为 Core 和 Agent 注入服务端令牌，并覆盖浏览器�
 3. 当前开发配置为 `AGENT_ROUTING_MODE=llm_only`，LLM 返回严格 JSON，例如 `CREATE_BUDGET` 和候选参数。
 4. `SlotTracker` 单独从用户原文提取金额等显式事实，并记录每个值的来源：用户明确输入、工具验证、系统常量或模型推断。
 5. “妈妈生日”和“下个月”可以作为模型推断值预填，但不能直接用于金融写操作；前端必须展示确认表单。
-6. 用户确认后，Planner 生成候选 DAG。`CapabilityBroker` 只暴露该意图允许的最小工具集合，`PlanVerifier` 再检查工具名、参数来源、依赖关系和权限。
+6. 用户确认后，前端发送结构化 `confirmation`；这些字段被标记为用户明确确认，不再二次进入 LLM，从而避免重复弹表单。随后确定性 Planner 生成 DAG，`CapabilityBroker` 和 `PlanVerifier` 检查工具、参数来源、依赖关系和权限。
 7. `ToolGateway` 用 Pydantic Schema 校验参数，通过 HTTP 调用 Banking Core。
 8. Banking Core 独立检查身份、资源所有权、风险、审批、MFA、幂等和业务状态，然后在数据库事务中执行。
 9. Agent 的最终回答只能根据真实 `ToolResult` 生成，不能仅凭 LLM 文本声称“创建成功”或“转账成功”。
@@ -581,7 +581,7 @@ node --test frontend/demo-final/server.test.mjs
 node --check frontend/demo-final/server.mjs
 ```
 
-当前普通测试结果为 `75 passed, 10 skipped`。跳过的 10 项需要单独配置一次性 PostgreSQL 测试库：
+当前普通测试结果为 `77 passed, 10 skipped`。跳过的 10 项需要单独配置一次性 PostgreSQL 测试库：
 
 ```powershell
 $env:DATABASE_TEST_URL = "postgresql+psycopg://banking:banking@localhost:5432/banking_test"

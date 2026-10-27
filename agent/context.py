@@ -40,6 +40,24 @@ class SlotTracker:
         r"[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\b"
     )
 
+    def from_confirmation(self, fields: dict[str, Any], intent: IntentResult) -> SlotState:
+        """Bind already-confirmed form values without asking an LLM to reinterpret them."""
+        facts = {
+            name: SlotFact(name, fields[name], FactSource.USER_EXPLICIT)
+            for name in intent.required_slots
+            if name in fields and fields[name] not in (None, "", [])
+        }
+        if intent.intent == Intent.TRANSFER and fields.get("include_balance") not in (
+            None,
+            "",
+            [],
+        ):
+            facts["include_balance"] = SlotFact(
+                "include_balance", fields["include_balance"], FactSource.USER_EXPLICIT
+            )
+        missing = [name for name in intent.required_slots if name not in facts]
+        return SlotState(facts=facts, missing=missing)
+
     def extract(self, text: str, intent: IntentResult) -> SlotState:
         facts: dict[str, SlotFact] = {}
         ids = self._UUID.findall(text)
