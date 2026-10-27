@@ -1,6 +1,6 @@
 # AI Banking Agent — Backend Architecture
 
-## 当前实际运行架构（2026-10-27，Task 2 完成后）
+## 当前实际运行架构（2026-10-27，Task 4.1 完成后）
 
 ```mermaid
 flowchart TB
@@ -10,15 +10,13 @@ flowchart TB
     NP -->|"自然语言 /api/agent/tasks"| API["Agent FastAPI + 可信上下文"]
 
     API --> LG["LangGraph<br/>PostgreSQL checkpoint"]
-    LG --> HR["HybridRouter"]
-    HR -->|"明确请求"| RR["RuleRouter<br/>确定性快路径"]
-    HR -->|"规则未识别"| LLM["LLM 结构化分类<br/>DeepSeek / Qwen / Local"]
-    RR --> SLOT["SlotTracker"]
-    LLM --> SLOT
-    SLOT -->|"规则路径"| BP["BaselinePlanner"]
-    SLOT -->|"LLM 路径"| LP["LLM 候选 TaskPlan / DAG"]
-    BP --> SAFE["CapabilityBroker + PlanVerifier"]
-    LP --> SAFE
+    LG --> GUARD["敏感信息 / 注入检查"]
+    GUARD --> LLM["LLM-only 结构化意图 + 候选 Slots<br/>DeepSeek / Qwen / Local"]
+    LLM --> SLOT["SlotTracker + 参数来源"]
+    SLOT -->|"缺失或含推断值"| FORM["结构化确认表单"]
+    FORM --> UI
+    SLOT -->|"全部已由用户确认"| LP["LLM 候选 TaskPlan / DAG"]
+    LP --> SAFE["CapabilityBroker + PlanVerifier"]
     SAFE --> GW["Typed ToolGateway"]
     GW --> CORE["Banking Core FastAPI"]
     CORE --> SEC["所有权 + 风险 + Approval / MFA + 幂等"]
@@ -28,21 +26,22 @@ flowchart TB
     PAUSE --> UI
     RESP --> API --> NP --> UI
 
-    JEV["Jev adapter<br/>当前仍未启用"] -.-> HR
+    RR["RuleRouter<br/>当前业务路由已关闭"] -.-> LLM
+    JEV["Jev adapter<br/>当前仍未启用"] -.-> LLM
 
     classDef rule fill:#fef3c7,stroke:#b45309,color:#78350f;
     classDef service fill:#dbeafe,stroke:#1d4ed8,color:#1e3a8a;
     classDef model fill:#ede9fe,stroke:#7c3aed,color:#4c1d95;
     classDef inactive fill:#f3f4f6,stroke:#6b7280,color:#4b5563,stroke-dasharray:5 5;
-    class RR,SLOT,BP,SAFE rule;
-    class API,LG,GW,CORE,SEC,DB,RESP,PAUSE service;
+    class RR,SLOT,SAFE rule;
+    class API,LG,GUARD,FORM,GW,CORE,SEC,DB,RESP,PAUSE service;
     class LLM,LP model;
     class JEV inactive;
 ```
 
-> **图例：**黄色是确定性规则与安全校验；紫色是当前已经接入的 LLM 分支；蓝色是在线服务、编排和执行层；灰色虚线 Jev 仍未启用。前端聊天不再执行银行关键词回退，LLM 只生成分类或候选计划，不能批准或直接执行金融操作。
+> **图例：**当前开发配置为 `llm_only`，普通业务规则路由已关闭；敏感信息和明显注入仍在调用模型前阻断。LLM 只生成结构化意图、候选参数或候选计划，候选参数先经用户表单确认，模型不能批准或直接执行金融操作。
 
-> **Document status:** 顶部为 Task 2 完成后的实际架构；下文保留最初的规划基线供对照。
+> **Document status:** 顶部为 Task 4.1 完成后的实际架构；下文保留最初的规划基线供对照。
 > **Scope:** Python-only Mock Banking Core, Typed Agent Tools, and their integration with the future AI Agent  
 > **Primary goals:** financial correctness, controlled tool execution, clear contracts, auditability, and rapid MVP delivery
 

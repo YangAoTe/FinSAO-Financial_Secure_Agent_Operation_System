@@ -6,7 +6,7 @@ import re
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 
 class Intent(StrEnum):
@@ -56,6 +56,7 @@ class IntentResult(BaseModel):
     route: Route
     reason: str
     required_slots: list[str] = Field(default_factory=list)
+    proposed_slots: dict[str, JsonValue] = Field(default_factory=dict)
     reply: str | None = None
 
 
@@ -96,6 +97,14 @@ class RuleRouter:
         del conversation
         normalized = re.sub(r"\s+", "", text).lower()
         injected = any(marker in normalized for marker in self._INJECTION_MARKERS)
+        if injected:
+            return self._result(
+                Intent.UNKNOWN,
+                route=Route.SAFE_FALLBACK,
+                complexity=5,
+                confidence=1.0,
+                reason="untrusted instruction marker requires safe fallback",
+            )
         if any(word in normalized for word in ("转账", "转给", "汇款")) or re.search(
             r"转\d", normalized
         ):
@@ -117,13 +126,9 @@ class RuleRouter:
         if "余额" in normalized:
             return self._result(
                 Intent.GET_BALANCE,
-                route=Route.PLANNER if injected else Route.RULE_DIRECT,
-                confidence=0.4 if injected else 0.98,
-                reason=(
-                    "untrusted instruction marker prevents direct routing"
-                    if injected
-                    else "deterministic supported intent"
-                ),
+                route=Route.RULE_DIRECT,
+                confidence=0.98,
+                reason="deterministic supported intent",
                 required_slots=["account_id"],
             )
         if any(word in normalized for word in ("流水", "交易记录", "明细")):
@@ -233,11 +238,7 @@ class RuleRouter:
         return self._result(
             Intent.UNKNOWN,
             route=Route.SAFE_FALLBACK,
-            complexity=5 if injected else 2,
-            confidence=1.0 if injected else 0.0,
-            reason=(
-                "untrusted instruction marker requires safe fallback"
-                if injected
-                else "request is outside deterministic supported intents"
-            ),
+            complexity=2,
+            confidence=0.0,
+            reason="request is outside deterministic supported intents",
         )

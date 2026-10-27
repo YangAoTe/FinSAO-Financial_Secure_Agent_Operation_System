@@ -50,7 +50,9 @@ register_default_tools(_registry, _banking_client)
 _model_provider = build_model_provider(_settings)
 _gateway = ToolGateway(_registry)
 _service = AgentService(
-    router=HybridRouter(RuleRouter(), _model_provider),
+    router=HybridRouter(
+        RuleRouter(), _model_provider, routing_mode=_settings.agent_routing_mode
+    ),
     slots=SlotTracker(),
     planner=HybridPlanner(BaselinePlanner(), _model_provider),
     verifier=PlanVerifier(_registry),

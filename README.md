@@ -64,8 +64,9 @@ $env:AGENT_DEVELOPMENT_USER_ID = .\.venv\Scripts\python.exe -c "from scripts.see
 .\.venv\Scripts\python.exe -m uvicorn agent.app:app --port 8100
 ```
 
-`POST http://127.0.0.1:8100/agent/requests` supports rule-first routing with an optional
-configured LLM fallback. Durable `/agent/tasks` run through LangGraph, with approval
+`POST http://127.0.0.1:8100/agent/requests` supports configurable `hybrid` and `llm_only`
+routing. The current development `.env` uses `llm_only`; model failure safely requests
+clarification instead of falling back to business rules. Durable `/agent/tasks` run through LangGraph, with approval
 resume/cancel/takeover and reconnectable SSE event routes. Requests never accept identity,
 risk or approval fields from the model/client message. Savings pots persist virtual goal
 allocations and never move account funds.
@@ -117,7 +118,7 @@ not a substitute for production OIDC/JWT user authentication or mTLS.
 Agent chat contracts reject passwords, one-time verification codes, CVV/CVC values and
 full card numbers before routing or persistence, so these values are not sent to an
 external model. Non-credential chat and explicit financial parameters can still be sent
-to the configured provider when the rule path falls back to the LLM.
+to the configured provider for intent and candidate-slot extraction in `llm_only` mode.
 
 - Green: authenticated reads.
 - Yellow: explicit confirmation, including daily CNY outgoing transfers up to 1,000 and subscription cancellation.

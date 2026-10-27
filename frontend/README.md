@@ -8,7 +8,7 @@
   └─ /api/agent/* → Agent API    http://127.0.0.1:8100
 ```
 
-前端服务负责同源代理，因此不需要放宽后端 CORS。Jev 未接入、未调用，也不影响现有功能；当前 Agent 继续使用仓库中的 `RuleRouter + BaselinePlanner + PlanVerifier + ToolGateway`。
+前端服务负责同源代理，因此不需要放宽后端 CORS。Jev 未接入、未调用，也不影响现有功能；当前 `.env` 使用 `AGENT_ROUTING_MODE=llm_only`，安全输入先经 LLM 生成结构化意图和候选参数，执行仍由 `PlanVerifier + ToolGateway` 控制。`RuleRouter` 保留在代码中，便于之后对照延迟和效果，但当前不承担正常业务路由。
 
 ## 前置条件
 
@@ -26,6 +26,8 @@ MOCK_MFA_CODE=123456
 BANKING_BASE_URL=http://127.0.0.1:8000
 BANKING_SERVICE_TOKEN=development-only
 AGENT_API_TOKEN=development-agent-only
+MODEL_PROVIDER=deepseek
+AGENT_ROUTING_MODE=llm_only
 ```
 
 生成确定性的 Lin 演示用户 UUID：
@@ -131,7 +133,7 @@ uv run ruff check agent banking_core tests
 - **Agent 能连通但工具调用失败**：检查 `BANKING_BASE_URL` 和 Core/Agent 的 `BANKING_SERVICE_TOKEN` 配置是否一致。
 - **Red 操作无法验证**：检查 `MOCK_MFA_CODE`，演示默认使用六位数字 `123456`。
 - **Durable task 接口失败**：确认 `AGENT_DATABASE_URL` 指向已迁移的 PostgreSQL；若设置了 `AGENT_CHECKPOINT_DATABASE_URL`，还要确认 LangGraph checkpoint 数据库可连接。
-- **规则外输入仍无法回复**：将 `MODEL_PROVIDER` 设置为 `deepseek`、`qwen` 或 `local`，并配置对应凭据/模型；`offline` 模式会安全返回能力范围。
+- **所有输入都只返回安全追问**：`llm_only` 必须将 `MODEL_PROVIDER` 设置为 `deepseek`、`qwen` 或 `local` 并配置凭据；Provider 不可用时不会退回业务规则执行。
 - **端口已占用**：用 `PORT`、`CORE_BACKEND_URL`、`AGENT_BACKEND_URL` 覆盖默认值。
 
 不要对含有真实银行信息的数据库运行演示重置命令。当前项目只应使用虚构比赛数据。

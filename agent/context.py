@@ -212,5 +212,13 @@ class SlotTracker:
                 )
             if amount:
                 facts["amount"] = SlotFact("amount", amount, FactSource.USER_EXPLICIT)
+        for name, value in intent.proposed_slots.items():
+            if (
+                name in intent.required_slots
+                and name not in facts
+                and value is not None
+                and value != ""
+            ):
+                facts[name] = SlotFact(name, value, FactSource.MODEL_INFERRED)
         missing = [slot for slot in intent.required_slots if slot not in facts]
         return SlotState(facts=facts, missing=missing)

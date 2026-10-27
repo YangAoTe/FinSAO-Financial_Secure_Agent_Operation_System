@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 from unittest.mock import Mock
 from uuid import UUID, uuid4
@@ -410,6 +411,71 @@ async def test_budget_clarification_supports_custom_category_and_month_picker() 
         "currency": "CNY",
     }
     assert gateway.calls == ["create_budget"]
+
+
+@pytest.mark.asyncio
+async def test_llm_only_routing_proposes_budget_fields_without_tool_execution() -> None:
+    registry = ToolRegistry()
+    register_default_tools(registry, Mock())
+    gateway = CapturingGateway()
+    provider = FakeModelProvider(
+        {
+            "intent": "CREATE_BUDGET",
+            "confidence": 0.98,
+            "reply": None,
+            "proposed_slots": {
+                "category": "妈妈生日",
+                "month_date": "2026-11-01",
+                "limit_amount": "1000.00",
+                "currency": "CNY",
+            },
+        }
+    )
+    service = AgentService(
+        router=HybridRouter(
+            RuleRouter(),
+            provider,
+            routing_mode="llm_only",
+            today=lambda: date(2026, 10, 27),
+        ),
+        slots=SlotTracker(),
+        planner=HybridPlanner(BaselinePlanner(), provider),
+        verifier=PlanVerifier(registry),
+        capabilities=CapabilityBroker(registry),
+        gateway=gateway,
+    )
+    session_id = uuid4()
+    response = await service.handle(
+        AgentRequest(
+            session_id=session_id,
+            message="我下个月想预留一些预算给妈妈过生日，大概1000元",
+        ),
+        _trusted_context(session_id),
+    )
+    assert response.status == AgentResponseStatus.NEEDS_CLARIFICATION
+    assert response.plan is None
+    assert gateway.calls == []
+    assert isinstance(response.result, dict)
+    clarification = response.result["clarification"]
+    assert isinstance(clarification, dict)
+    assert clarification["intent"] == "CREATE_BUDGET"
+    fields = {item["name"]: item for item in clarification["fields"]}
+    assert fields["category"]["value"] == "妈妈生日"
+    assert fields["category"]["inferred"] is True
+    assert fields["month_date"]["value"] == "2026-11-01"
+    assert fields["month_date"]["inferred"] is True
+    assert fields["limit_amount"]["value"] == "1000.00"
+    assert fields["limit_amount"]["inferred"] is False
+
+
+@pytest.mark.asyncio
+async def test_llm_only_mode_fails_closed_instead_of_using_business_rules() -> None:
+    result = await HybridRouter(
+        RuleRouter(), None, routing_mode="llm_only"
+    ).route("查看我的银行卡")
+    assert result.intent == Intent.UNKNOWN
+    assert result.route == Route.SAFE_FALLBACK
+    assert result.confidence == 0
 
 
 def _trusted_context(session_id: UUID) -> TrustedAgentContext:

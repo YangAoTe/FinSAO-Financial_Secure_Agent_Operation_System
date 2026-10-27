@@ -1,12 +1,14 @@
-"""Rule-first routing with an optional structured LLM fallback."""
+"""Configurable LLM-only or rule-first routing with deterministic safety boundaries."""
 
 from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
+from datetime import date
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
 
 from agent.context import FactSource, SlotState
 from agent.contracts import (
@@ -29,6 +31,23 @@ class LlmIntentDecision(BaseModel):
     intent: Intent
     confidence: float = Field(ge=0, le=1)
     reply: str | None = Field(default=None, max_length=1_000)
+    proposed_slots: dict[str, JsonValue] = Field(default_factory=dict)
+
+    @field_validator("proposed_slots")
+    @classmethod
+    def reject_trusted_slots(cls, value: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        forbidden = {
+            "user_id",
+            "authenticated_user_id",
+            "authorization_ref",
+            "authorization_reference",
+            "mfa_code",
+            "risk_tier",
+            "approved",
+        }
+        if forbidden.intersection(value):
+            raise ValueError("trusted fields are forbidden in inferred slots")
+        return value
 
 
 _REQUIRED_SLOTS: dict[Intent, list[str]] = {
@@ -55,7 +74,7 @@ _REQUIRED_SLOTS: dict[Intent, list[str]] = {
 
 
 class HybridRouter:
-    """Use deterministic rules first and LLM classification only for unmatched text."""
+    """Route with either rule-first fallback or an LLM-only experiment mode."""
 
     def __init__(
         self,
@@ -63,32 +82,48 @@ class HybridRouter:
         provider: ModelProvider | None,
         *,
         confidence_threshold: float = 0.65,
+        routing_mode: str = "hybrid",
+        today: Callable[[], date] = date.today,
     ) -> None:
         self._rules = rules
         self._provider = provider
         self._confidence_threshold = confidence_threshold
+        self._routing_mode = routing_mode
+        self._today = today
 
     async def route(
         self, text: str, *, conversation: list[Any] | None = None
     ) -> IntentResult:
-        deterministic = self._rules.route(text)
-        if deterministic.route != Route.SAFE_FALLBACK:
+        deterministic = self._rules.route(text, conversation=conversation)
+        if self._routing_mode == "hybrid" and deterministic.route != Route.SAFE_FALLBACK:
             return deterministic
         if "instruction marker" in deterministic.reason:
             return deterministic
         if self._provider is None or not self._provider.available:
-            return deterministic
+            return self._unavailable_fallback(deterministic)
         supported = ", ".join(intent.value for intent in Intent if intent != Intent.UNKNOWN)
+        today = self._today().isoformat()
         messages = [
             ConversationMessage(
                 role=ConversationRole.SYSTEM,
                 trust=TrustLabel.SYSTEM_POLICY,
                 content=(
-                    "你是银行助手的意图分类器。只输出一个 JSON 对象，字段必须严格为："
-                    '{"intent":"枚举值","confidence":0到1,"reply":null或字符串}。'
+                    "你是银行助手的结构化意图与候选参数提取器。只输出一个 JSON 对象，"
+                    "字段必须严格为："
+                    '{"intent":"枚举值","confidence":0到1,"reply":null或字符串,'
+                    '"proposed_slots":{"字段名":"候选值"}}。'
                     "不要输出分析、Markdown 或额外字段。不得声称金融操作成功，"
-                    "不得生成身份、授权、验证码、账户或金额。普通问候使用 GENERAL_CHAT；"
+                    "不得生成身份、授权、验证码或风险等级。普通问候使用 GENERAL_CHAT；"
                     "普通问候的 reply 给出简短自然回复，银行任务的 reply 使用 null；"
+                    "从用户当前消息和连续澄清上下文中提取候选参数。金额使用两位小数字符串，"
+                    "币种默认 CNY；相对日期可以根据今天换算，但只能作为 proposed_slots，"
+                    "后端会要求用户确认后才执行。创建预算使用 CREATE_BUDGET，而不是"
+                    "LIST_BUDGETS；month_date 使用月份第一天 YYYY-MM-01。"
+                    "对于预算或储蓄目标，可根据用户明确说明的用途提出简短、可读的自定义"
+                    "category/name，例如‘给妈妈过生日’可提出‘妈妈生日’；这仍只是待确认候选。"
+                    "不得猜测 UUID、账户、银行卡、联系人或理财产品标识；用户没有明确提供"
+                    "这些标识时应省略对应 slot。"
+                    f"今天是 {today}。"
                     f"支持的 intent: {supported}。"
                 ),
             ),
@@ -100,7 +135,7 @@ class HybridRouter:
                 messages=messages,
                 output_model=LlmIntentDecision,
                 temperature=0,
-                max_tokens=256,
+                max_tokens=512,
             )
         except ProviderError as exc:
             logger.warning(
@@ -109,18 +144,36 @@ class HybridRouter:
                 exc.code,
                 exc.request_id,
             )
-            return deterministic
+            return self._unavailable_fallback(deterministic)
         decision = generated.output
         if decision.confidence < self._confidence_threshold or decision.intent == Intent.UNKNOWN:
-            return deterministic
+            return self._unavailable_fallback(deterministic)
+        required_slots = _REQUIRED_SLOTS.get(decision.intent, [])
+        proposed_slots = {
+            name: value
+            for name, value in decision.proposed_slots.items()
+            if name in required_slots and value is not None and value != ""
+        }
         return IntentResult(
             intent=decision.intent,
             complexity=1 if decision.intent == Intent.GENERAL_CHAT else 3,
             confidence=decision.confidence,
             route=(Route.RULE_DIRECT if decision.intent == Intent.GENERAL_CHAT else Route.PLANNER),
             reason=f"llm:{generated.provider}/{generated.model}",
-            required_slots=_REQUIRED_SLOTS.get(decision.intent, []),
+            required_slots=required_slots,
+            proposed_slots=proposed_slots,
             reply=decision.reply,
+        )
+
+    def _unavailable_fallback(self, deterministic: IntentResult) -> IntentResult:
+        if self._routing_mode == "hybrid":
+            return deterministic
+        return IntentResult(
+            intent=Intent.UNKNOWN,
+            complexity=2,
+            confidence=0,
+            route=Route.SAFE_FALLBACK,
+            reason="llm-only routing unavailable or below confidence threshold",
         )
 
 
@@ -165,7 +218,6 @@ class HybridPlanner:
                     f"{tool_json}\n可信槽位：{fact_json}"
                 ),
             ),
-            *request.conversation[-10:],
             ConversationMessage(role=ConversationRole.USER, content=request.message),
         ]
         try:
